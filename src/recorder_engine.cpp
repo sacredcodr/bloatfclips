@@ -10,8 +10,8 @@ namespace clipper {
 
 RecorderEngine::RecorderEngine(AppConfig cfg)
     : cfg_(std::move(cfg)),
-      videoRing_(cfg_.VideoArenaBytes(), cfg_.VideoMaxSlots()),
-      audioRing_(cfg_.AudioArenaBytes(), cfg_.AudioMaxSlots()) {}
+      videoRing_(cfg_.VideoArenaBytes(), cfg_.VideoMaxSlots(), cfg_.VideoRetainUs()),
+      audioRing_(cfg_.AudioArenaBytes(), cfg_.AudioMaxSlots(), cfg_.AudioRetainUs()) {}
 
 RecorderEngine::~RecorderEngine() {
     Stop();

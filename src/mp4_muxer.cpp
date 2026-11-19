@@ -198,8 +198,12 @@ AvcSpsChromaInfo ParseSpsChromaInfo(const std::vector<uint8_t>& sps) {
     return info;
 }
 
+// AVCC sample = vclNals[nalFirst, nalFirst + nalCount), each written as a 4-byte BE length plus
+// the NAL payload, which stays in the input snapshot so a save never holds a second clip copy.
 struct PreparedVideoSample {
-    std::vector<uint8_t> avccBytes;
+    uint32_t nalFirst = 0;
+    uint32_t nalCount = 0;
+    uint32_t avccSize = 0;
     uint32_t durationTicks = 1500;
     bool isKeyFrame = false;
 };
@@ -249,6 +253,7 @@ struct PreparedMuxData {
     std::vector<uint8_t> sps;
     std::vector<uint8_t> pps;
     std::vector<PreparedVideoSample> videoSamples;
+    std::vector<NalSpan> vclNals;
     std::vector<uint32_t> keyFrameIndices;
     std::vector<SttsRun> videoStts;
     uint64_t videoTotalTicks = 0;
@@ -290,7 +295,9 @@ bool PrepareMuxData(const Mp4MuxInput& input, PreparedMuxData& out, std::string&
         const ClipPacket& pkt = input.video.packets[i];
         const uint8_t* ptr = input.video.bytes.data() + pkt.offset;
         auto nals = SplitAnnexBNals(ptr, pkt.size);
-        std::vector<uint8_t>& avcc = out.videoSamples[i].avccBytes;
+        PreparedVideoSample& sample = out.videoSamples[i];
+        sample.nalFirst = static_cast<uint32_t>(out.vclNals.size());
+        uint64_t avccSize = 0;
         for (const auto& nal : nals) {
             if (nal.size == 0) continue;
             uint8_t nalType = nal.data[0] & 0x1Fu;
@@ -305,11 +312,12 @@ bool PrepareMuxData(const Mp4MuxInput& input, PreparedMuxData& out, std::string&
             if (nalType == 9) {
                 continue;
             }
-            uint32_t sz = static_cast<uint32_t>(nal.size);
-            AppendBE32(avcc, sz);
-            avcc.insert(avcc.end(), nal.data, nal.data + nal.size);
+            out.vclNals.push_back(nal);
+            avccSize += 4 + nal.size;
         }
-        if (avcc.empty()) {
+        sample.nalCount = static_cast<uint32_t>(out.vclNals.size() - sample.nalFirst);
+        sample.avccSize = static_cast<uint32_t>(avccSize);
+        if (sample.nalCount == 0) {
             errOut = "video packet produced zero VCL NAL units";
             return false;
         }
@@ -400,7 +408,7 @@ bool PrepareMuxData(const Mp4MuxInput& input, PreparedMuxData& out, std::string&
             uint32_t vStart = static_cast<uint32_t>(vIdx);
             uint64_t vBytes = 0;
             while (vIdx < nv && (input.video.packets[vIdx].ptsUs < bucketEndUs || vIdx == vStart)) {
-                vBytes += out.videoSamples[vIdx].avccBytes.size();
+                vBytes += out.videoSamples[vIdx].avccSize;
                 vIdx++;
             }
             if (vIdx > vStart && input.video.packets[vIdx - 1].ptsUs >= bucketEndUs) {
@@ -625,7 +633,7 @@ std::vector<uint8_t> BuildMoovBox(const Mp4MuxInput& input, const PreparedMuxDat
         AppendBE32(b, 0);
         AppendBE32(b, static_cast<uint32_t>(data.videoSamples.size()));
         for (const auto& s : data.videoSamples) {
-            AppendBE32(b, static_cast<uint32_t>(s.avccBytes.size()));
+            AppendBE32(b, s.avccSize);
         }
         EndBox(b, stsz);
 
@@ -878,8 +886,12 @@ bool BuildMp4Bytes(const Mp4MuxInput& input, std::vector<uint8_t>& outBytes, std
     for (const auto& chunk : data.chunks) {
         if (chunk.isVideo) {
             for (uint32_t i = 0; i < chunk.sampleCount; ++i) {
-                const auto& bytes = data.videoSamples[chunk.firstSample + i].avccBytes;
-                outBytes.insert(outBytes.end(), bytes.begin(), bytes.end());
+                const PreparedVideoSample& vs = data.videoSamples[chunk.firstSample + i];
+                for (uint32_t n = 0; n < vs.nalCount; ++n) {
+                    const NalSpan& nal = data.vclNals[vs.nalFirst + n];
+                    AppendBE32(outBytes, static_cast<uint32_t>(nal.size));
+                    outBytes.insert(outBytes.end(), nal.data, nal.data + nal.size);
+                }
             }
         } else {
             for (uint32_t i = 0; i < chunk.sampleCount; ++i) {
@@ -947,8 +959,15 @@ bool WriteMp4File(const std::wstring& path, const Mp4MuxInput& input, std::strin
         const auto& chunk = data.chunks[ci];
         if (chunk.isVideo) {
             for (uint32_t i = 0; writeOk && i < chunk.sampleCount; ++i) {
-                const auto& bytes = data.videoSamples[chunk.firstSample + i].avccBytes;
-                writeOk = pushStage(bytes.data(), bytes.size());
+                const PreparedVideoSample& vs = data.videoSamples[chunk.firstSample + i];
+                for (uint32_t n = 0; writeOk && n < vs.nalCount; ++n) {
+                    const NalSpan& nal = data.vclNals[vs.nalFirst + n];
+                    const uint32_t sz = static_cast<uint32_t>(nal.size);
+                    const uint8_t lenBe[4] = {
+                        static_cast<uint8_t>(sz >> 24), static_cast<uint8_t>(sz >> 16),
+                        static_cast<uint8_t>(sz >> 8), static_cast<uint8_t>(sz) };
+                    writeOk = pushStage(lenBe, 4) && pushStage(nal.data, nal.size);
+                }
             }
         } else {
             for (uint32_t i = 0; writeOk && i < chunk.sampleCount; ++i) {
