@@ -229,21 +229,34 @@ void ApplyKeyValue(const std::string& key, const std::string& val, AppConfig& cf
 
 }
 
+namespace {
+constexpr uint32_t kVideoMarginSeconds = 3;
+constexpr uint32_t kAudioMarginSeconds = 5;
+}
+
 size_t AppConfig::VideoArenaBytes() const {
     double bytesPerSec = std::ceil(static_cast<double>(bitrateMbps) * 1.35 * 1'000'000.0 / 8.0);
-    return static_cast<size_t>(replaySeconds + 3) * static_cast<size_t>(bytesPerSec);
+    return static_cast<size_t>(replaySeconds + kVideoMarginSeconds) * static_cast<size_t>(bytesPerSec);
 }
 
 size_t AppConfig::VideoMaxSlots() const {
-    return static_cast<size_t>(replaySeconds + 3) * static_cast<size_t>(fps) + 64;
+    return static_cast<size_t>(replaySeconds + kVideoMarginSeconds) * static_cast<size_t>(fps) + 64;
+}
+
+int64_t AppConfig::VideoRetainUs() const {
+    return static_cast<int64_t>(replaySeconds + kVideoMarginSeconds) * 1'000'000;
 }
 
 size_t AppConfig::AudioArenaBytes() const {
-    return static_cast<size_t>(replaySeconds + 5) * (256'000 / 8);
+    return static_cast<size_t>(replaySeconds + kAudioMarginSeconds) * (256'000 / 8);
 }
 
 size_t AppConfig::AudioMaxSlots() const {
-    return static_cast<size_t>(replaySeconds + 5) * 48 + 64;
+    return static_cast<size_t>(replaySeconds + kAudioMarginSeconds) * 48 + 64;
+}
+
+int64_t AppConfig::AudioRetainUs() const {
+    return static_cast<int64_t>(replaySeconds + kAudioMarginSeconds) * 1'000'000;
 }
 
 AppConfig MakeDefaultConfig() {

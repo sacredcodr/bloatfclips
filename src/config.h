@@ -38,8 +38,10 @@ struct AppConfig {
 
     size_t VideoArenaBytes() const;
     size_t VideoMaxSlots() const;
+    int64_t VideoRetainUs() const;
     size_t AudioArenaBytes() const;
     size_t AudioMaxSlots() const;
+    int64_t AudioRetainUs() const;
 };
 
 struct ConfigParseResult {

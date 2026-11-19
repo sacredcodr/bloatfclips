@@ -307,6 +307,29 @@ void TestRingBuffer() {
     }
 
     {
+        // Time-based retention evicts whole GOPs (and discards their pages) long before the
+        // arena fills, while a keyframe at or before the retention cutoff always survives.
+        PacketRingBuffer rb(4 * 1024 * 1024, 100'000, 10'000'000LL);
+        std::vector<uint8_t> pkt(6000);
+        for (uint32_t i = 0; i < 3000; ++i) {
+            std::fill(pkt.begin(), pkt.end(), static_cast<uint8_t>(i & 0xFF));
+            CHECK(rb.Push(pkt.data(), static_cast<uint32_t>(pkt.size()), i * 100'000LL, 100'000, (i % 10) == 0));
+        }
+        CHECK(rb.PacketCount() <= 111);
+        CHECK(rb.PacketCount() >= 101);
+        ClipStreamSnapshot snap = rb.SnapshotVideoWindow(10'000'000LL);
+        CHECK(!snap.Empty());
+        CHECK(snap.packets.front().isKeyFrame);
+        CHECK(snap.packets.front().ptsUs <= 299'900'000LL - 10'000'000LL);
+        CHECK(snap.packets.back().ptsUs == 299'900'000LL);
+        for (const auto& p : snap.packets) {
+            uint8_t tag = static_cast<uint8_t>((p.ptsUs / 100'000LL) & 0xFF);
+            CHECK(std::all_of(snap.bytes.begin() + p.offset, snap.bytes.begin() + p.offset + p.size,
+                [tag](uint8_t v) { return v == tag; }));
+        }
+    }
+
+    {
         PacketRingBuffer rb(128 * 1024, 2000);
         std::atomic<bool> done{ false };
         std::thread writer([&]() {
