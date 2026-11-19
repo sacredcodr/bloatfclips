@@ -7,19 +7,15 @@
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
 #include <mfapi.h>
-#include <mferror.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <psapi.h>
 #include <wrl/client.h>
 
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <filesystem>
-#include <numeric>
 #include <string>
 #include <vector>
 
@@ -120,9 +116,8 @@ bool VerifyMp4WithSourceReader(const std::wstring& path, uint32_t expectedW, uin
     while ((!vDone || !aDone) && reads < 50000) {
         reads++;
         DWORD sIdx = 0, sFlags = 0;
-        LONGLONG ts = 0;
         ComPtr<IMFSample> sample;
-        hr = reader->ReadSample(static_cast<DWORD>(MF_SOURCE_READER_ANY_STREAM), 0, &sIdx, &sFlags, &ts, &sample);
+        hr = reader->ReadSample(static_cast<DWORD>(MF_SOURCE_READER_ANY_STREAM), 0, &sIdx, &sFlags, nullptr, &sample);
         if (FAILED(hr)) {
             std::printf("Verify FAIL: ReadSample HR=0x%08lX\n", static_cast<unsigned long>(hr));
             return false;
@@ -163,7 +158,7 @@ bool VerifyMp4WithSourceReader(const std::wstring& path, uint32_t expectedW, uin
 }
 
 int RunSelfTestClip(int seconds, const std::wstring& outPath, AppConfig cfg) {
-    uint32_t maxForBudget = 12000u / std::max<uint32_t>(1u, cfg.bitrateMbps);
+    uint32_t maxForBudget = kMaxBitrateSecondsBudget / std::max<uint32_t>(1u, cfg.bitrateMbps);
     uint32_t desired = static_cast<uint32_t>(std::max(5, seconds + 5));
     cfg.replaySeconds = std::clamp<uint32_t>(desired, 5u, std::max<uint32_t>(5u, maxForBudget));
     cfg.saveChime = false;
@@ -304,9 +299,9 @@ public:
             "  return float4(frac(acc), frac(acc * 0.7), frac(acc * 0.3), 1.0);\n"
             "}\n";
 
-        ComPtr<ID3DBlob> vsBlob, psBlob, errBlob;
-        if (FAILED(D3DCompile(kVsSrc, sizeof(kVsSrc) - 1, nullptr, nullptr, nullptr, "main", "vs_5_0", 0, 0, &vsBlob, &errBlob))) return false;
-        if (FAILED(D3DCompile(kPsSrc, sizeof(kPsSrc) - 1, nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0, &psBlob, &errBlob))) return false;
+        ComPtr<ID3DBlob> vsBlob, psBlob;
+        if (FAILED(D3DCompile(kVsSrc, sizeof(kVsSrc) - 1, nullptr, nullptr, nullptr, "main", "vs_5_0", 0, 0, &vsBlob, nullptr))) return false;
+        if (FAILED(D3DCompile(kPsSrc, sizeof(kPsSrc) - 1, nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0, &psBlob, nullptr))) return false;
         if (FAILED(dev_->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vs_))) return false;
         if (FAILED(dev_->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &ps_))) return false;
 
@@ -363,21 +358,18 @@ public:
         int64_t endTicks = NowQpcTicks() + static_cast<int64_t>(seconds) * QpcFrequency();
         uint64_t frame = 0;
 
-        auto collectQuery = [&](int idx, bool wait) {
+        auto collectQuery = [&](int idx) {
             auto& q = qPool_[idx];
             if (!q.active) return;
             D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dis{};
             while (ctx_->GetData(q.disjoint.Get(), &dis, sizeof(dis), 0) == S_FALSE) {
-                if (!wait) return;
                 Sleep(0);
             }
             UINT64 t0 = 0, t1 = 0;
             while (ctx_->GetData(q.tsStart.Get(), &t0, sizeof(t0), 0) == S_FALSE) {
-                if (!wait) return;
                 Sleep(0);
             }
             while (ctx_->GetData(q.tsEnd.Get(), &t1, sizeof(t1), 0) == S_FALSE) {
-                if (!wait) return;
                 Sleep(0);
             }
             q.active = false;
@@ -389,7 +381,7 @@ public:
 
         while (NowQpcTicks() < endTicks) {
             int idx = static_cast<int>(frame % kQueryPool);
-            collectQuery(idx, true);
+            collectQuery(idx);
 
             D3D11_MAPPED_SUBRESOURCE mapped{};
             if (SUCCEEDED(ctx_->Map(cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -426,7 +418,7 @@ public:
             frame++;
         }
 
-        for (int i = 0; i < kQueryPool; ++i) collectQuery(i, true);
+        for (int i = 0; i < kQueryPool; ++i) collectQuery(i);
 
         D3D11_BOX box{ 500, 500, 0, 501, 501, 1 };
         ctx_->CopySubresourceRegion(staging_.Get(), 0, 0, 0, 0, rt_.Get(), 0, &box);

@@ -8,7 +8,13 @@
 
 namespace clipper {
 
-inline constexpr uint32_t kMaxBitrateSecondsBudget = 12000;
+inline constexpr uint32_t kMinFps = 15;
+inline constexpr uint32_t kMaxFps = 240;
+inline constexpr uint32_t kMinBitrateMbps = 2;
+inline constexpr uint32_t kMaxBitrateMbps = 80;
+inline constexpr uint32_t kMinReplaySeconds = 5;
+inline constexpr uint32_t kMaxReplaySeconds = 3600;
+inline constexpr uint32_t kMaxBitrateSecondsBudget = 48000;
 
 struct HotkeySpec {
     uint32_t modifiers = 0x0002 | 0x0001;
@@ -49,6 +55,8 @@ void ValidateAppConfig(AppConfig& cfg, std::vector<std::string>& warnings);
 std::wstring Utf8ToWide(std::string_view utf8);
 std::string WideToUtf8(std::wstring_view wide);
 std::wstring ExpandEnvPath(std::string_view utf8Path);
+bool ParseDurationInput(std::wstring_view text, bool defaultMinutes, uint32_t& outSeconds);
+std::wstring FormatReplayLengthShort(uint32_t seconds);
 ConfigParseResult ParseConfigText(std::string_view text, AppConfig base = MakeDefaultConfig());
 std::string SerializeConfig(const AppConfig& cfg);
 ConfigParseResult LoadOrCreateConfig(const std::wstring& iniPath);

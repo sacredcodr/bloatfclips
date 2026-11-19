@@ -1,6 +1,9 @@
 #include "settings_window.h"
 
 #include <dwmapi.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
 #include <shellapi.h>
 #include <shellscalingapi.h>
 #include <shobjidl.h>
@@ -9,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 
 namespace clipper {
@@ -19,17 +23,17 @@ constexpr wchar_t kSettingsWndClass[] = L"ClipperSettingsWindow";
 constexpr UINT_PTR kStatusTimerId = 1;
 constexpr UINT_PTR kThumbTimerId = 2;
 
-constexpr float kWndW = 960.0f;
+constexpr float kWndW = 1000.0f;
 constexpr float kWndH = 640.0f;
-constexpr float kSidebarW = 220.0f;
-constexpr float kHeaderH = 68.0f;
-constexpr float kFooterH = 62.0f;
-constexpr float kViewTop = kHeaderH;
-constexpr float kViewBottom = kWndH - kFooterH;
+constexpr float kTitleBarH = 40.0f;
+constexpr float kRailW = 54.0f;
+constexpr float kContentPadL = 16.0f;
+constexpr float kContentPadR = 28.0f;
+constexpr float kContentX = kRailW + kContentPadL;
+constexpr float kContentW = kWndW - kContentX - kContentPadR;
+constexpr float kViewTop = 92.0f;
+constexpr float kViewBottom = 584.0f;
 constexpr float kViewH = kViewBottom - kViewTop;
-constexpr float kContentPadL = 28.0f;
-constexpr float kContentPadR = 36.0f;
-constexpr float kContentW = kWndW - kSidebarW - kContentPadL - kContentPadR;
 
 constexpr D2D1_COLOR_F C(uint32_t rgb, float a = 1.0f) {
     return D2D1_COLOR_F{
@@ -40,39 +44,33 @@ constexpr D2D1_COLOR_F C(uint32_t rgb, float a = 1.0f) {
     };
 }
 
-constexpr D2D1_COLOR_F kColBg = C(0x0B0C10);
-constexpr D2D1_COLOR_F kColSidebar = C(0x0F1117);
-constexpr D2D1_COLOR_F kColHeaderBg = C(0x0C0D12);
-constexpr D2D1_COLOR_F kColCard = C(0x14161F);
-constexpr D2D1_COLOR_F kColCardHover = C(0x1A1D29);
-constexpr D2D1_COLOR_F kColWell = C(0x0D0F16);
-constexpr D2D1_COLOR_F kColWellHover = C(0x151824);
-constexpr D2D1_COLOR_F kColBorder = C(0x232634);
-constexpr D2D1_COLOR_F kColBorderHover = C(0x373C52);
-constexpr D2D1_COLOR_F kColDivider = C(0x1D202C);
+constexpr D2D1_COLOR_F kColMicaBase = C(0x1B1C1F);
+constexpr D2D1_COLOR_F kColSurface = C(0xFFFFFF, 0.045f);
+constexpr D2D1_COLOR_F kColSurfaceHover = C(0xFFFFFF, 0.075f);
+constexpr D2D1_COLOR_F kColSurfaceActive = C(0xFFFFFF, 0.115f);
+constexpr D2D1_COLOR_F kColBorder = C(0xFFFFFF, 0.055f);
+constexpr D2D1_COLOR_F kColBorderTop = C(0xFFFFFF, 0.105f);
+constexpr D2D1_COLOR_F kColBorderHover = C(0xFFFFFF, 0.16f);
+constexpr D2D1_COLOR_F kColWell = C(0x0E0F11, 0.65f);
+constexpr D2D1_COLOR_F kColInputBg = C(0x111214);
+constexpr D2D1_COLOR_F kColInputBorder = C(0xFFFFFF, 0.14f);
 
-constexpr D2D1_COLOR_F kColAccent = C(0x5E6AD2);
-constexpr D2D1_COLOR_F kColAccentHover = C(0x6E7AE2);
-constexpr D2D1_COLOR_F kColAccentTint = C(0x5E6AD2, 0.14f);
-constexpr D2D1_COLOR_F kColAccentBorder = C(0x5E6AD2, 0.65f);
+constexpr D2D1_COLOR_F kColText = C(0xFFFFFF);
+constexpr D2D1_COLOR_F kColTextSec = C(0xD4D4D8);
+constexpr D2D1_COLOR_F kColTextMuted = C(0x9E9EA8);
 
-constexpr D2D1_COLOR_F kColText = C(0xF3F4F8);
-constexpr D2D1_COLOR_F kColTextSec = C(0x9BA1B2);
-constexpr D2D1_COLOR_F kColTextMuted = C(0x666C7E);
-
-constexpr D2D1_COLOR_F kColGreen = C(0x22C55E);
-constexpr D2D1_COLOR_F kColGreenTint = C(0x22C55E, 0.14f);
+constexpr D2D1_COLOR_F kColAccent = C(0xF4F4F5);
+constexpr D2D1_COLOR_F kColAccentText = C(0x111113);
+constexpr D2D1_COLOR_F kColGreen = C(0x34D399);
 constexpr D2D1_COLOR_F kColAmber = C(0xF59E0B);
-constexpr D2D1_COLOR_F kColAmberTint = C(0xF59E0B, 0.15f);
 constexpr D2D1_COLOR_F kColRed = C(0xEF4444);
-constexpr D2D1_COLOR_F kColRedTint = C(0xEF4444, 0.15f);
+constexpr D2D1_COLOR_F kColCloseHover = C(0xC42B1C);
 
-constexpr D2D1_COLOR_F kColKeyBase = C(0x090A0F);
-constexpr D2D1_COLOR_F kColKeyBody = C(0x222635);
-constexpr D2D1_COLOR_F kColKeyBorder = C(0x3B4159);
-constexpr D2D1_COLOR_F kColKeyHi = C(0x555D7E, 0.55f);
+constexpr D2D1_COLOR_F kColKeyBody = C(0x232428);
+constexpr D2D1_COLOR_F kColKeyBorder = C(0xFFFFFF, 0.14f);
 
-constexpr uint32_t kDurationPresets[] = { 15, 30, 60, 90, 120, 180, 300 };
+constexpr uint32_t kFpsPresets[] = { 30, 60, 120, 144 };
+constexpr uint32_t kReplayPresetsSec[] = { 30, 60, 120, 300, 600 };
 
 std::vector<std::wstring> SplitKeycaps(const std::string& display) {
     std::vector<std::wstring> parts;
@@ -128,19 +126,187 @@ bool CreateConfiguredTextFormat(IDWriteFactory* dw, const wchar_t* family, float
     return true;
 }
 
-std::wstring FormatIntegerComma(uint64_t val) {
-    wchar_t buf[32] = {};
-    std::swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%llu", static_cast<unsigned long long>(val));
-    std::wstring raw(buf);
-    std::wstring out;
-    int count = 0;
-    for (size_t i = raw.size(); i > 0; --i) {
-        if (count > 0 && (count % 3) == 0) out.push_back(L',');
-        out.push_back(raw[i - 1]);
-        count++;
+std::wstring FormatReplayBoxValue(uint32_t seconds, bool asMinutes) {
+    if (!asMinutes) {
+        return std::to_wstring(seconds);
     }
-    std::reverse(out.begin(), out.end());
-    return out;
+    if ((seconds % 60u) == 0u) {
+        return std::to_wstring(seconds / 60u);
+    }
+    wchar_t buf[32] = {};
+    std::swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%.2f", static_cast<double>(seconds) / 60.0);
+    std::wstring s(buf);
+    while (!s.empty() && s.back() == L'0') s.pop_back();
+    if (!s.empty() && s.back() == L'.') s.pop_back();
+    return s;
+}
+
+std::wstring FormatRamHuman(double megabytes) {
+    wchar_t buf[48] = {};
+    if (megabytes >= 1024.0) {
+        std::swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%.2f GB", megabytes / 1024.0);
+    } else {
+        std::swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%.0f MB", megabytes);
+    }
+    return buf;
+}
+
+bool ParseStrictPositiveUint(std::wstring_view s, uint32_t& out) {
+    if (s.empty()) return false;
+    uint64_t val = 0;
+    for (wchar_t ch : s) {
+        if (ch < L'0' || ch > L'9') return false;
+        val = val * 10ULL + static_cast<uint64_t>(ch - L'0');
+        if (val > 1'000'000ULL) val = 1'000'000ULL;
+    }
+    if (val == 0) return false;
+    out = static_cast<uint32_t>(val);
+    return true;
+}
+
+bool LoadMp4FirstFrameBitmap(const std::wstring& path, ID2D1RenderTarget* rt,
+                             Microsoft::WRL::ComPtr<ID2D1Bitmap>& outBmp) {
+    struct MfScope {
+        bool started = false;
+        MfScope() { started = SUCCEEDED(MFStartup(MF_VERSION)); }
+        ~MfScope() { if (started) MFShutdown(); }
+        MfScope(const MfScope&) = delete;
+        MfScope& operator=(const MfScope&) = delete;
+    } mf;
+    if (!mf.started || !rt) return false;
+
+    Microsoft::WRL::ComPtr<IMFAttributes> attrs;
+    if (FAILED(MFCreateAttributes(&attrs, 1)) || !attrs) return false;
+    if (FAILED(attrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE))) return false;
+
+    Microsoft::WRL::ComPtr<IMFSourceReader> reader;
+    if (FAILED(MFCreateSourceReaderFromURL(path.c_str(), attrs.Get(), &reader)) || !reader) {
+        return false;
+    }
+
+    constexpr DWORD kAllStreams = static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS);
+    constexpr DWORD kFirstVideo = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
+    reader->SetStreamSelection(kAllStreams, FALSE);
+    if (FAILED(reader->SetStreamSelection(kFirstVideo, TRUE))) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IMFMediaType> rgbType;
+    if (FAILED(MFCreateMediaType(&rgbType)) || !rgbType) return false;
+    if (FAILED(rgbType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video))) return false;
+    if (FAILED(rgbType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32))) return false;
+    if (FAILED(reader->SetCurrentMediaType(kFirstVideo, nullptr, rgbType.Get()))) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IMFMediaType> actualType;
+    if (FAILED(reader->GetCurrentMediaType(kFirstVideo, &actualType)) || !actualType) {
+        return false;
+    }
+
+    UINT32 w = 0;
+    UINT32 h = 0;
+    if (FAILED(MFGetAttributeSize(actualType.Get(), MF_MT_FRAME_SIZE, &w, &h)) || w == 0 || h == 0) {
+        return false;
+    }
+    INT32 defaultStride = static_cast<INT32>(w * 4u);
+    UINT32 dsU = 0;
+    if (SUCCEEDED(actualType->GetUINT32(MF_MT_DEFAULT_STRIDE, &dsU))) {
+        defaultStride = static_cast<INT32>(dsU);
+    }
+
+    Microsoft::WRL::ComPtr<IMFSample> sample;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        DWORD flags = 0;
+        Microsoft::WRL::ComPtr<IMFSample> cur;
+        HRESULT hr = reader->ReadSample(kFirstVideo, 0, nullptr, &flags, nullptr, &cur);
+        if (FAILED(hr) || (flags & MF_SOURCE_READERF_ENDOFSTREAM)) break;
+        if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
+            Microsoft::WRL::ComPtr<IMFMediaType> changedType;
+            if (SUCCEEDED(reader->GetCurrentMediaType(kFirstVideo, &changedType)) && changedType) {
+                UINT32 nw = 0;
+                UINT32 nh = 0;
+                if (SUCCEEDED(MFGetAttributeSize(changedType.Get(), MF_MT_FRAME_SIZE, &nw, &nh)) && nw > 0 && nh > 0) {
+                    w = nw;
+                    h = nh;
+                    defaultStride = static_cast<INT32>(w * 4u);
+                    UINT32 cdsU = 0;
+                    if (SUCCEEDED(changedType->GetUINT32(MF_MT_DEFAULT_STRIDE, &cdsU))) {
+                        defaultStride = static_cast<INT32>(cdsU);
+                    }
+                }
+            }
+        }
+        if (cur) {
+            sample = cur;
+            break;
+        }
+    }
+    if (!sample || w > 16384u || h > 16384u) return false;
+
+    Microsoft::WRL::ComPtr<IMFMediaBuffer> buf;
+    if (FAILED(sample->ConvertToContiguousBuffer(&buf)) || !buf) return false;
+
+    Microsoft::WRL::ComPtr<IMF2DBuffer> buf2d;
+    BYTE* pixels = nullptr;
+    LONG srcStride = 0;
+    DWORD curLen = 0;
+    bool locked2d = false;
+    bool locked1d = false;
+
+    if (SUCCEEDED(buf.As(&buf2d)) && buf2d && SUCCEEDED(buf2d->Lock2D(&pixels, &srcStride))) {
+        locked2d = true;
+    } else if (SUCCEEDED(buf->Lock(&pixels, nullptr, &curLen))) {
+        locked1d = true;
+        srcStride = static_cast<LONG>(defaultStride);
+    } else {
+        return false;
+    }
+
+    auto unlockBuf = [&]() {
+        if (locked2d) buf2d->Unlock2D();
+        else if (locked1d) buf->Unlock();
+    };
+
+    if (!pixels) {
+        unlockBuf();
+        return false;
+    }
+    if (srcStride == 0) srcStride = static_cast<LONG>(w * 4u);
+
+    uint32_t rowBytes = w * 4u;
+    int64_t absStride64 = srcStride < 0 ? -static_cast<int64_t>(srcStride) : static_cast<int64_t>(srcStride);
+    if (absStride64 < rowBytes || absStride64 > 100'000) {
+        unlockBuf();
+        return false;
+    }
+    uint32_t absStride = static_cast<uint32_t>(absStride64);
+    if (!locked2d && static_cast<uint64_t>(absStride) * h > curLen) {
+        unlockBuf();
+        return false;
+    }
+
+    std::vector<uint8_t> flipped;
+    const void* uploadPtr = pixels;
+    UINT32 uploadPitch = absStride;
+    if (srcStride < 0) {
+        flipped.resize(static_cast<size_t>(rowBytes) * h);
+        for (uint32_t y = 0; y < h; ++y) {
+            const uint8_t* srcRow = locked2d
+                ? (pixels + static_cast<ptrdiff_t>(y) * srcStride)
+                : (pixels + static_cast<size_t>(h - 1u - y) * absStride);
+            std::memcpy(flipped.data() + static_cast<size_t>(y) * rowBytes, srcRow, rowBytes);
+        }
+        uploadPtr = flipped.data();
+        uploadPitch = rowBytes;
+    }
+
+    D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
+    HRESULT bmpHr = rt->CreateBitmap(D2D1::SizeU(w, h), uploadPtr, uploadPitch, &props, &outBmp);
+
+    unlockBuf();
+    return SUCCEEDED(bmpHr) && outBmp;
 }
 
 }
@@ -153,6 +319,7 @@ SettingsWindow::~SettingsWindow() {
 }
 
 void SettingsWindow::ShowOrFocus(HINSTANCE hInst, HICON icon, SettingsTab initialTab) {
+    CommitOrCancelInput(false);
     activeTab_ = initialTab;
     scrollY_ = 0.0f;
 
@@ -192,14 +359,8 @@ void SettingsWindow::ShowOrFocus(HINSTANCE hInst, HICON icon, SettingsTab initia
     }
 
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT wr{
-        0, 0,
-        MulDiv(static_cast<int>(kWndW), dpi_, 96),
-        MulDiv(static_cast<int>(kWndH), dpi_, 96)
-    };
-    AdjustWindowRectExForDpi(&wr, style, FALSE, 0, static_cast<UINT>(dpi_));
-    int winW = wr.right - wr.left;
-    int winH = wr.bottom - wr.top;
+    int winW = MulDiv(static_cast<int>(kWndW), dpi_, 96);
+    int winH = MulDiv(static_cast<int>(kWndH), dpi_, 96);
     int posX = mi.rcWork.left + ((mi.rcWork.right - mi.rcWork.left) - winW) / 2;
     int posY = mi.rcWork.top + ((mi.rcWork.bottom - mi.rcWork.top) - winH) / 2;
 
@@ -211,20 +372,21 @@ void SettingsWindow::ShowOrFocus(HINSTANCE hInst, HICON icon, SettingsTab initia
 
     BOOL dark = TRUE;
     DWM_WINDOW_CORNER_PREFERENCE cornerPref = DWMWCP_ROUND;
-    COLORREF captionCol = RGB(13, 14, 19);
-    COLORREF borderCol = RGB(35, 38, 52);
+    COLORREF borderCol = RGB(46, 48, 54);
     DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
     DwmSetWindowAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPref, sizeof(cornerPref));
-    DwmSetWindowAttribute(hwnd_, DWMWA_CAPTION_COLOR, &captionCol, sizeof(captionCol));
     DwmSetWindowAttribute(hwnd_, DWMWA_BORDER_COLOR, &borderCol, sizeof(borderCol));
+    MARGINS margins{ 0, 0, 0, 1 };
+    DwmExtendFrameIntoClientArea(hwnd_, &margins);
 
+    SetWindowPos(hwnd_, nullptr, posX, posY, winW, winH, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
     ShowWindow(hwnd_, SW_SHOW);
     UpdateWindow(hwnd_);
     SetForegroundWindow(hwnd_);
 }
 
 void SettingsWindow::SetActiveTab(SettingsTab tab) {
-    if (recordingHotkey_) EndHotkeyCapture(true);
+    CommitOrCancelInput(true);
     if (activeTab_ != tab) {
         activeTab_ = tab;
         scrollY_ = 0.0f;
@@ -233,7 +395,7 @@ void SettingsWindow::SetActiveTab(SettingsTab tab) {
     }
     if (activeTab_ == SettingsTab::Clips) {
         ReloadClips();
-    } else if (activeTab_ == SettingsTab::Capture) {
+    } else {
         ReloadMonitors();
     }
     InvalidateWindow();
@@ -291,16 +453,6 @@ bool SettingsWindow::EnsureDeviceIndependentResources() {
             return false;
         }
     }
-    if (!roundStroke_) {
-        D2D1_STROKE_STYLE_PROPERTIES props{};
-        props.startCap = D2D1_CAP_STYLE_ROUND;
-        props.endCap = D2D1_CAP_STYLE_ROUND;
-        props.dashCap = D2D1_CAP_STYLE_ROUND;
-        props.lineJoin = D2D1_LINE_JOIN_ROUND;
-        props.miterLimit = 4.0f;
-        props.dashStyle = D2D1_DASH_STYLE_SOLID;
-        d2dFactory_->CreateStrokeStyle(&props, nullptr, 0, &roundStroke_);
-    }
     if (!dwriteFactory_) {
         if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
                 reinterpret_cast<IUnknown**>(dwriteFactory_.GetAddressOf())))) {
@@ -311,18 +463,26 @@ bool SettingsWindow::EnsureDeviceIndependentResources() {
         CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wicFactory_));
     }
     if (!fmtBrand_) {
-        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Segoe UI", 16.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, false, false, fmtBrand_);
-        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Segoe UI", 19.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, false, true, fmtPageTitle_);
-        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Segoe UI", 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, false, true, fmtSection_);
-        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Segoe UI", 13.0f, DWRITE_FONT_WEIGHT_NORMAL, false, true, fmtBody_);
+        glyphFontName_ = L"Segoe MDL2 Assets";
+        Microsoft::WRL::ComPtr<IDWriteFontCollection> sysFonts;
+        if (SUCCEEDED(dwriteFactory_->GetSystemFontCollection(&sysFonts, FALSE)) && sysFonts) {
+            UINT32 idx = 0;
+            BOOL exists = FALSE;
+            if (SUCCEEDED(sysFonts->FindFamilyName(L"Segoe Fluent Icons", &idx, &exists)) && exists) {
+                glyphFontName_ = L"Segoe Fluent Icons";
+            }
+        }
+        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Segoe UI", 12.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, false, false, fmtBrand_);
+        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Segoe UI", 22.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, false, true, fmtPageTitle_);
+        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Segoe UI", 13.5f, DWRITE_FONT_WEIGHT_MEDIUM, false, true, fmtRowTitle_);
+        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Segoe UI", 12.5f, DWRITE_FONT_WEIGHT_NORMAL, false, true, fmtBody_);
         CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Segoe UI", 13.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, false, true, fmtBodySemi_);
         CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Segoe UI", 11.5f, DWRITE_FONT_WEIGHT_NORMAL, false, true, fmtSmall_);
-        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Segoe UI", 11.5f, DWRITE_FONT_WEIGHT_NORMAL, true, false, fmtSmallWrap_);
-        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Segoe UI", 10.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, false, true, fmtMicro_);
-        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Consolas", 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, false, true, fmtMono_);
-        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Consolas", 12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, false, false, fmtKeycap_);
+        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Cascadia Mono", 11.5f, DWRITE_FONT_WEIGHT_NORMAL, false, true, fmtMono_);
+        CreateConfiguredTextFormat(dwriteFactory_.Get(), L"Cascadia Mono", 11.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, false, false, fmtKeycap_);
+        CreateConfiguredTextFormat(dwriteFactory_.Get(), glyphFontName_.c_str(), 16.0f, DWRITE_FONT_WEIGHT_NORMAL, false, false, fmtGlyph_);
     }
-    return d2dFactory_ && dwriteFactory_ && fmtBody_;
+    return d2dFactory_ && dwriteFactory_ && fmtBody_ && fmtGlyph_;
 }
 
 bool SettingsWindow::EnsureBackbuffer(int w, int h) {
@@ -409,15 +569,13 @@ void SettingsWindow::DestroyAllResources() {
     DiscardDeviceResources();
     fmtBrand_.Reset();
     fmtPageTitle_.Reset();
-    fmtSection_.Reset();
+    fmtRowTitle_.Reset();
     fmtBody_.Reset();
     fmtBodySemi_.Reset();
     fmtSmall_.Reset();
-    fmtSmallWrap_.Reset();
-    fmtMicro_.Reset();
     fmtMono_.Reset();
     fmtKeycap_.Reset();
-    roundStroke_.Reset();
+    fmtGlyph_.Reset();
     wicFactory_.Reset();
     dwriteFactory_.Reset();
     d2dFactory_.Reset();
@@ -430,6 +588,7 @@ void SettingsWindow::ReloadConfigState() {
     if (callbacks_.getConfig) {
         appliedCfg_ = callbacks_.getConfig();
         editedCfg_ = appliedCfg_;
+        replayUnitMinutes_ = (editedCfg_.replaySeconds >= 60u && (editedCfg_.replaySeconds % 60u) == 0u);
     }
     ReloadMonitors();
     ReloadClips();
@@ -493,6 +652,9 @@ void SettingsWindow::StepThumbnailBatch(size_t maxCount, bool invalidateOnLoad) 
                 }
             }
         }
+        if (!entry.bmp) {
+            LoadMp4FirstFrameBitmap(clip.fullPath, rt_.Get(), entry.bmp);
+        }
     }
 
     if (!remaining && hwnd_) {
@@ -511,15 +673,15 @@ bool SettingsWindow::IsDirty() const {
     return !ConfigsEqual(appliedCfg_, editedCfg_);
 }
 
-void SettingsWindow::ComputeRamEstimate(double& outMb, float& outRatio, bool& outOverCap) const {
+void SettingsWindow::ComputeRamEstimate(double& outMb, bool& outOverCap, uint32_t& outClampedSecs) const {
     AppConfig est = editedCfg_;
-    est.bitrateMbps = std::max<uint32_t>(est.bitrateMbps, 2u);
-    est.replaySeconds = std::max<uint32_t>(est.replaySeconds, 5u);
+    est.bitrateMbps = std::clamp(est.bitrateMbps, kMinBitrateMbps, kMaxBitrateMbps);
+    est.replaySeconds = std::clamp(est.replaySeconds, kMinReplaySeconds, kMaxReplaySeconds);
     double totalBytes = static_cast<double>(est.VideoArenaBytes() + est.AudioArenaBytes());
     outMb = totalBytes / (1024.0 * 1024.0);
     uint64_t budget = static_cast<uint64_t>(est.bitrateMbps) * est.replaySeconds;
-    outRatio = ClampF(static_cast<float>(budget) / static_cast<float>(kMaxBitrateSecondsBudget), 0.0f, 1.0f);
     outOverCap = budget > kMaxBitrateSecondsBudget;
+    outClampedSecs = std::max(kMinReplaySeconds, kMaxBitrateSecondsBudget / est.bitrateMbps);
 }
 
 void SettingsWindow::DrawTextLine(std::wstring_view text, IDWriteTextFormat* fmt,
@@ -532,419 +694,387 @@ void SettingsWindow::DrawTextLine(std::wstring_view text, IDWriteTextFormat* fmt
     rt_->DrawText(text.data(), static_cast<UINT32>(text.size()), fmt, rect, brush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
-void SettingsWindow::DrawPillButton(D2D1_RECT_F rect, const wchar_t* label, const ui::IconId* icon,
-                                    HitKey key, bool primary, bool subtleDanger) {
-    bool hovered = (hoveredHit_ == key);
-    D2D1_COLOR_F fill = kColWell;
-    D2D1_COLOR_F border = kColBorder;
-    D2D1_COLOR_F fg = kColText;
+void SettingsWindow::DrawGlyph(const wchar_t* glyph, float fontSize, D2D1_RECT_F rect, D2D1_COLOR_F color) {
+    if (!rt_ || !dwriteFactory_ || !fmtGlyph_ || !brush_ || !glyph || glyph[0] == L'\0') return;
+    fmtGlyph_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    fmtGlyph_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    float w = std::max(1.0f, rect.right - rect.left);
+    float h = std::max(1.0f, rect.bottom - rect.top);
+    if (SUCCEEDED(dwriteFactory_->CreateTextLayout(glyph, 1, fmtGlyph_.Get(), w, h, &layout)) && layout) {
+        layout->SetFontSize(fontSize, DWRITE_TEXT_RANGE{ 0, 1 });
+        brush_->SetColor(color);
+        rt_->DrawTextLayout(D2D1::Point2F(rect.left, rect.top), layout.Get(), brush_.Get());
+    }
+}
+
+void SettingsWindow::DrawFluentSurface(D2D1_RECT_F rect, float radius, bool hovered, bool active) {
+    D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(rect, radius, radius);
+    brush_->SetColor(active ? kColSurfaceActive : (hovered ? kColSurfaceHover : kColSurface));
+    rt_->FillRoundedRectangle(rr, brush_.Get());
+
+    brush_->SetColor(active ? kColAccent : (hovered ? kColBorderHover : kColBorder));
+    rt_->DrawRoundedRectangle(rr, brush_.Get(), active ? 1.4f : 1.0f);
+
+    if (!active) {
+        brush_->SetColor(hovered ? C(0xFFFFFF, 0.16f) : kColBorderTop);
+        rt_->DrawLine(
+            D2D1::Point2F(rect.left + radius, rect.top + 0.5f),
+            D2D1::Point2F(rect.right - radius, rect.top + 0.5f),
+            brush_.Get(), 1.0f);
+    }
+}
+
+void SettingsWindow::DrawFluentButton(D2D1_RECT_F rect, const wchar_t* label, const wchar_t* glyph,
+                                      HitKey key, bool primary, bool subtleDisabled, bool inViewport) {
+    bool hovered = !subtleDisabled && (hoveredHit_ == key);
+    D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(rect, 5.0f, 5.0f);
 
     if (primary) {
-        fill = hovered ? kColAccentHover : kColAccent;
-        border = fill;
-        fg = C(0xFFFFFF);
-    } else if (subtleDanger) {
-        fill = hovered ? kColRedTint : kColWell;
-        border = hovered ? C(0xEF4444, 0.55f) : kColBorder;
-        fg = hovered ? kColRed : kColTextSec;
+        if (subtleDisabled) {
+            brush_->SetColor(kColSurface);
+            rt_->FillRoundedRectangle(rr, brush_.Get());
+            brush_->SetColor(kColBorder);
+            rt_->DrawRoundedRectangle(rr, brush_.Get(), 1.0f);
+        } else {
+            brush_->SetColor(hovered ? C(0xFFFFFF) : kColAccent);
+            rt_->FillRoundedRectangle(rr, brush_.Get());
+        }
     } else {
-        fill = hovered ? kColCardHover : kColWell;
-        border = hovered ? kColBorderHover : kColBorder;
-        fg = kColText;
+        DrawFluentSurface(rect, 5.0f, hovered, false);
     }
 
-    D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(rect, 7.0f, 7.0f);
-    brush_->SetColor(fill);
-    rt_->FillRoundedRectangle(rr, brush_.Get());
-    if (!primary || hovered) {
-        brush_->SetColor(border);
-        rt_->DrawRoundedRectangle(rr, brush_.Get(), 1.0f);
-    }
+    D2D1_COLOR_F fg = primary
+        ? (subtleDisabled ? kColTextMuted : kColAccentText)
+        : (subtleDisabled ? kColTextMuted : kColTextSec);
 
     bool hasLabel = (label && label[0] != L'\0');
-    if (icon && hasLabel) {
-        std::wstring_view labelSv(label);
+    bool hasGlyph = (glyph && glyph[0] != L'\0');
+
+    if (hasGlyph && hasLabel) {
+        std::wstring_view sv(label);
         float textW = 0.0f;
         Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
         if (dwriteFactory_ && SUCCEEDED(dwriteFactory_->CreateTextLayout(
-                labelSv.data(), static_cast<UINT32>(labelSv.size()), fmtBodySemi_.Get(), 300.0f, 30.0f, &layout))) {
+                sv.data(), static_cast<UINT32>(sv.size()), fmtBody_.Get(), 300.0f, 30.0f, &layout))) {
             DWRITE_TEXT_METRICS tm{};
             layout->GetMetrics(&tm);
             textW = tm.width;
         }
-        float iconSz = 14.0f;
-        float gap = 6.0f;
-        float totalW = iconSz + gap + textW;
+        float glyphW = 14.0f;
+        float gap = 7.0f;
+        float totalW = glyphW + gap + textW;
         float cx = (rect.left + rect.right) * 0.5f;
-        float cy = (rect.top + rect.bottom) * 0.5f;
         float startX = cx - totalW * 0.5f;
-
-        brush_->SetColor(fg);
-        ui::DrawVectorIcon(rt_.Get(), d2dFactory_.Get(), brush_.Get(), roundStroke_.Get(), *icon,
-            D2D1::RectF(startX, cy - iconSz * 0.5f, startX + iconSz, cy + iconSz * 0.5f), 1.6f);
-
-        DrawTextLine(labelSv, fmtBodySemi_.Get(),
-            D2D1::RectF(startX + iconSz + gap, rect.top, rect.right - 4.0f, rect.bottom),
-            fg, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    } else if (icon) {
-        float cy = (rect.top + rect.bottom) * 0.5f;
-        float cx = (rect.left + rect.right) * 0.5f;
-        float half = 7.5f;
-        brush_->SetColor(fg);
-        ui::DrawVectorIcon(rt_.Get(), d2dFactory_.Get(), brush_.Get(), roundStroke_.Get(), *icon,
-            D2D1::RectF(cx - half, cy - half, cx + half, cy + half), 1.6f);
+        DrawGlyph(glyph, 13.0f, D2D1::RectF(startX, rect.top, startX + glyphW, rect.bottom), fg);
+        DrawTextLine(sv, fmtBody_.Get(),
+            D2D1::RectF(startX + glyphW + gap, rect.top, rect.right - 4.0f, rect.bottom), fg,
+            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    } else if (hasGlyph) {
+        DrawGlyph(glyph, 14.0f, rect, fg);
     } else if (hasLabel) {
-        DrawTextLine(label, fmtBodySemi_.Get(), rect, fg,
+        DrawTextLine(label, primary ? fmtBodySemi_.Get() : fmtBody_.Get(), rect, fg,
             DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
 
-    hitTargets_.push_back({ rect, key, false });
+    if (!subtleDisabled) {
+        hitTargets_.push_back({ rect, key, inViewport });
+    }
+}
+
+void SettingsWindow::DrawEditBox(D2D1_RECT_F rect, std::wstring_view displayValue, InputMode mode,
+                                 HitKey key, DWRITE_TEXT_ALIGNMENT align) {
+    bool editing = (inputMode_ == mode);
+    bool hovered = (hoveredHit_ == key);
+    D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(rect, 5.0f, 5.0f);
+
+    brush_->SetColor(editing ? C(0x090A0C) : kColInputBg);
+    rt_->FillRoundedRectangle(rr, brush_.Get());
+    brush_->SetColor(editing ? kColAccent : (hovered ? kColBorderHover : kColInputBorder));
+    rt_->DrawRoundedRectangle(rr, brush_.Get(), editing ? 1.5f : 1.0f);
+
+    std::wstring shown = editing ? editBuffer_ : std::wstring(displayValue);
+    if (editing && replaceOnFirstChar_ && !shown.empty()) {
+        brush_->SetColor(C(0xFFFFFF, 0.16f));
+        rt_->FillRoundedRectangle(
+            D2D1::RoundedRect(D2D1::RectF(rect.left + 6.0f, rect.top + 5.0f, rect.right - 6.0f, rect.bottom - 5.0f), 3.0f, 3.0f),
+            brush_.Get());
+    } else if (editing) {
+        shown.push_back(L'|');
+    }
+
+    DrawTextLine(shown, fmtKeycap_.Get(),
+        D2D1::RectF(rect.left + 6.0f, rect.top, rect.right - 6.0f, rect.bottom),
+        kColText, align, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+    hitTargets_.push_back({ rect, key, true });
 }
 
 void SettingsWindow::DrawToggleSwitch(D2D1_RECT_F rect, bool on, bool hovered) {
     float h = rect.bottom - rect.top;
     float r = h * 0.5f;
-    D2D1_COLOR_F track = on ? (hovered ? kColAccentHover : kColAccent) : (hovered ? C(0x303546) : C(0x252938));
-    brush_->SetColor(track);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(rect, r, r), brush_.Get());
+    D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(rect, r, r);
 
-    if (!on) {
-        brush_->SetColor(kColBorderHover);
-        rt_->DrawRoundedRectangle(D2D1::RoundedRect(rect, r, r), brush_.Get(), 1.0f);
+    if (on) {
+        brush_->SetColor(hovered ? C(0xFFFFFF) : kColAccent);
+        rt_->FillRoundedRectangle(rr, brush_.Get());
+    } else {
+        brush_->SetColor(hovered ? C(0xFFFFFF, 0.09f) : C(0xFFFFFF, 0.04f));
+        rt_->FillRoundedRectangle(rr, brush_.Get());
+        brush_->SetColor(hovered ? C(0xFFFFFF, 0.55f) : C(0xFFFFFF, 0.38f));
+        rt_->DrawRoundedRectangle(rr, brush_.Get(), 1.0f);
     }
 
-    float knobR = r - 3.0f;
+    float knobR = r - 4.0f;
     float knobX = on ? (rect.right - r) : (rect.left + r);
     float knobY = (rect.top + rect.bottom) * 0.5f;
-    brush_->SetColor(on ? C(0xFFFFFF) : C(0xC5CAD8));
+    brush_->SetColor(on ? kColMicaBase : C(0xD4D4D8));
     rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(knobX, knobY), knobR, knobR), brush_.Get());
 }
 
-float SettingsWindow::DrawKeycapGroup(float startX, float centerY, const std::string& display,
-                                      bool darkStyle, float maxRight) {
+void SettingsWindow::DrawKeycapGroupRight(float rightX, float centerY, const std::string& display, float minLeft) {
     std::vector<std::wstring> parts = SplitKeycaps(display);
-    if (parts.empty()) return startX;
+    if (parts.empty()) return;
 
-    float x = startX;
-    float capH = darkStyle ? 28.0f : 22.0f;
-    float padX = darkStyle ? 10.0f : 7.0f;
-    float minW = darkStyle ? 30.0f : 22.0f;
-    float gap = darkStyle ? 6.0f : 4.0f;
-    IDWriteTextFormat* fmt = darkStyle ? fmtKeycap_.Get() : fmtMicro_.Get();
+    float capH = 26.0f;
+    float padX = 9.0f;
+    float minW = 28.0f;
+    float gap = 5.0f;
 
+    std::vector<float> widths(parts.size(), minW);
+    float totalW = 0.0f;
     for (size_t i = 0; i < parts.size(); ++i) {
         float textW = 14.0f;
         Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
         if (dwriteFactory_ && SUCCEEDED(dwriteFactory_->CreateTextLayout(
-                parts[i].c_str(), static_cast<UINT32>(parts[i].size()), fmt, 200.0f, 30.0f, &layout))) {
+                parts[i].c_str(), static_cast<UINT32>(parts[i].size()), fmtKeycap_.Get(), 180.0f, 28.0f, &layout))) {
             DWRITE_TEXT_METRICS tm{};
             layout->GetMetrics(&tm);
             textW = std::ceil(tm.width);
         }
-        float w = std::max(minW, textW + padX * 2.0f);
-        if (maxRight > 0.0f && x + w > maxRight) break;
+        widths[i] = std::max(minW, textW + padX * 2.0f);
+        totalW += widths[i] + (i + 1 < parts.size() ? gap : 0.0f);
+    }
 
-        float top = centerY - capH * 0.5f;
-        D2D1_RECT_F baseR = D2D1::RectF(x, top + 2.0f, x + w, top + capH + 2.0f);
-        brush_->SetColor(kColKeyBase);
-        rt_->FillRoundedRectangle(D2D1::RoundedRect(baseR, 5.0f, 5.0f), brush_.Get());
+    float x = std::max(minLeft, rightX - totalW);
+    float top = centerY - capH * 0.5f;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        float w = widths[i];
+        if (x + w > rightX + 0.5f) break;
 
         D2D1_RECT_F capR = D2D1::RectF(x, top, x + w, top + capH);
         brush_->SetColor(kColKeyBody);
-        rt_->FillRoundedRectangle(D2D1::RoundedRect(capR, 5.0f, 5.0f), brush_.Get());
+        rt_->FillRoundedRectangle(D2D1::RoundedRect(capR, 4.0f, 4.0f), brush_.Get());
         brush_->SetColor(kColKeyBorder);
-        rt_->DrawRoundedRectangle(D2D1::RoundedRect(capR, 5.0f, 5.0f), brush_.Get(), 1.0f);
+        rt_->DrawRoundedRectangle(D2D1::RoundedRect(capR, 4.0f, 4.0f), brush_.Get(), 1.0f);
 
-        brush_->SetColor(kColKeyHi);
-        rt_->DrawLine(D2D1::Point2F(x + 4.0f, top + 1.0f), D2D1::Point2F(x + w - 4.0f, top + 1.0f), brush_.Get(), 1.0f);
-
-        DrawTextLine(parts[i], fmt, capR, kColText,
+        DrawTextLine(parts[i], fmtKeycap_.Get(), capR, kColText,
             DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
         x += w + gap;
     }
-    return x;
 }
 
-void SettingsWindow::DrawSidebar(D2D1_RECT_F area) {
-    brush_->SetColor(kColSidebar);
-    rt_->FillRectangle(area, brush_.Get());
+void SettingsWindow::DrawMicaBackdrop() {
+    rt_->Clear(kColMicaBase);
 
-    brush_->SetColor(kColDivider);
-    rt_->DrawLine(D2D1::Point2F(area.right, 0.0f), D2D1::Point2F(area.right, kWndH), brush_.Get(), 1.0f);
-
-    D2D1_RECT_F logoBox = D2D1::RectF(18.0f, 19.0f, 48.0f, 49.0f);
-    brush_->SetColor(kColAccent);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(logoBox, 8.0f, 8.0f), brush_.Get());
-    brush_->SetColor(C(0xFFFFFF));
-    ui::DrawVectorIcon(rt_.Get(), d2dFactory_.Get(), brush_.Get(), roundStroke_.Get(), ui::IconId::BrandEmblem,
-        D2D1::RectF(23.0f, 24.0f, 43.0f, 44.0f), 1.8f);
-
-    DrawTextLine(L"Clipper", fmtBrand_.Get(),
-        D2D1::RectF(58.0f, 18.0f, 140.0f, 40.0f), kColText);
-    DrawTextLine(L"Zero-Overhead", fmtMicro_.Get(),
-        D2D1::RectF(58.0f, 36.0f, 152.0f, 52.0f), kColTextMuted);
-
-    D2D1_RECT_F nvPill = D2D1::RectF(156.0f, 24.0f, 204.0f, 42.0f);
-    brush_->SetColor(kColAccentTint);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(nvPill, 4.0f, 4.0f), brush_.Get());
-    brush_->SetColor(C(0x5E6AD2, 0.35f));
-    rt_->DrawRoundedRectangle(D2D1::RoundedRect(nvPill, 4.0f, 4.0f), brush_.Get(), 1.0f);
-    DrawTextLine(L"NVENC", fmtMicro_.Get(), nvPill, C(0xA5B4FC),
-        DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-
-    struct NavDef {
-        SettingsTab tab;
-        const wchar_t* label;
-        ui::IconId icon;
-    };
-    const NavDef navs[] = {
-        { SettingsTab::Clips, L"Clips", ui::IconId::FilmClips },
-        { SettingsTab::Capture, L"Capture", ui::IconId::MonitorCapture },
-        { SettingsTab::Audio, L"Audio", ui::IconId::WaveformAudio },
-        { SettingsTab::Hotkeys, L"Hotkeys", ui::IconId::KeyboardKeys },
+    auto paintGlow = [&](float cx, float cy, float rx, float ry, float peakAlpha) {
+        D2D1_GRADIENT_STOP stops[2] = {
+            { 0.0f, C(0xFFFFFF, peakAlpha) },
+            { 1.0f, C(0xFFFFFF, 0.0f) }
+        };
+        Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> col;
+        Microsoft::WRL::ComPtr<ID2D1RadialGradientBrush> rad;
+        if (SUCCEEDED(rt_->CreateGradientStopCollection(stops, 2, &col)) && col &&
+            SUCCEEDED(rt_->CreateRadialGradientBrush(
+                D2D1::RadialGradientBrushProperties(D2D1::Point2F(cx, cy), D2D1::Point2F(0.0f, 0.0f), rx, ry),
+                col.Get(), &rad)) && rad) {
+            rt_->FillRectangle(D2D1::RectF(0.0f, 0.0f, kWndW, kWndH), rad.Get());
+        }
     };
 
-    float navY = 82.0f;
-    for (const auto& n : navs) {
-        D2D1_RECT_F nr = D2D1::RectF(12.0f, navY, kSidebarW - 12.0f, navY + 38.0f);
-        HitKey key{ HitAction::SelectTab, static_cast<int>(n.tab) };
-        bool active = (activeTab_ == n.tab);
-        bool hovered = (hoveredHit_ == key);
+    paintGlow(120.0f, 64.0f, 440.0f, 300.0f, 0.032f);
+    paintGlow(860.0f, 560.0f, 480.0f, 320.0f, 0.025f);
+}
 
-        if (active) {
-            brush_->SetColor(kColCardHover);
-            rt_->FillRoundedRectangle(D2D1::RoundedRect(nr, 7.0f, 7.0f), brush_.Get());
-            brush_->SetColor(kColBorder);
-            rt_->DrawRoundedRectangle(D2D1::RoundedRect(nr, 7.0f, 7.0f), brush_.Get(), 1.0f);
-
-            D2D1_RECT_F accentBar = D2D1::RectF(12.0f, navY + 8.0f, 15.0f, navY + 30.0f);
-            brush_->SetColor(kColAccent);
-            rt_->FillRoundedRectangle(D2D1::RoundedRect(accentBar, 1.5f, 1.5f), brush_.Get());
-        } else if (hovered) {
-            brush_->SetColor(kColCard);
-            rt_->FillRoundedRectangle(D2D1::RoundedRect(nr, 7.0f, 7.0f), brush_.Get());
-        }
-
-        D2D1_COLOR_F iconCol = active ? C(0xA5B4FC) : (hovered ? kColText : kColTextSec);
-        D2D1_COLOR_F txtCol = active ? kColText : (hovered ? kColText : kColTextSec);
-        brush_->SetColor(iconCol);
-        ui::DrawVectorIcon(rt_.Get(), d2dFactory_.Get(), brush_.Get(), roundStroke_.Get(), n.icon,
-            D2D1::RectF(26.0f, navY + 10.0f, 44.0f, navY + 28.0f), 1.65f);
-
-        DrawTextLine(n.label, fmtBodySemi_.Get(),
-            D2D1::RectF(54.0f, navY, kSidebarW - 50.0f, navY + 38.0f), txtCol);
-
-        if (n.tab == SettingsTab::Clips && !clips_.empty()) {
-            wchar_t cntBuf[16] = {};
-            std::swprintf(cntBuf, sizeof(cntBuf) / sizeof(wchar_t), L"%zu", clips_.size());
-            D2D1_RECT_F badge = D2D1::RectF(kSidebarW - 46.0f, navY + 10.0f, kSidebarW - 20.0f, navY + 28.0f);
-            brush_->SetColor(active ? kColAccentTint : kColWell);
-            rt_->FillRoundedRectangle(D2D1::RoundedRect(badge, 9.0f, 9.0f), brush_.Get());
-            DrawTextLine(cntBuf, fmtMicro_.Get(), badge,
-                active ? C(0xC7D2FE) : kColTextMuted,
-                DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        }
-
-        hitTargets_.push_back({ nr, key, false });
-        navY += 44.0f;
-    }
-
-    D2D1_RECT_F statusCard = D2D1::RectF(12.0f, 396.0f, kSidebarW - 12.0f, 578.0f);
-    brush_->SetColor(kColCard);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(statusCard, 10.0f, 10.0f), brush_.Get());
-    brush_->SetColor(kColBorder);
-    rt_->DrawRoundedRectangle(D2D1::RoundedRect(statusCard, 10.0f, 10.0f), brush_.Get(), 1.0f);
-
+void SettingsWindow::DrawTitleBar() {
     D2D1_COLOR_F dotCol = kColTextMuted;
-    D2D1_COLOR_F pillBg = kColWell;
-    const wchar_t* stateLabel = L"STOPPED";
-    if (status_.state == EngineState::Running) {
-        dotCol = kColGreen;
-        pillBg = kColGreenTint;
-        stateLabel = L"LIVE BUFFER";
-    } else if (status_.state == EngineState::Recovering || status_.state == EngineState::Starting) {
-        dotCol = kColAmber;
-        pillBg = kColAmberTint;
-        stateLabel = (status_.state == EngineState::Starting) ? L"STARTING" : L"RECOVERING";
-    } else if (status_.state == EngineState::Faulted) {
-        dotCol = kColRed;
-        pillBg = kColRedTint;
-        stateLabel = L"FAULTED";
-    }
+    if (status_.state == EngineState::Running) dotCol = kColGreen;
+    else if (status_.state == EngineState::Recovering || status_.state == EngineState::Starting) dotCol = kColAmber;
+    else if (status_.state == EngineState::Faulted) dotCol = kColRed;
 
-    D2D1_RECT_F pillR = D2D1::RectF(24.0f, 408.0f, 118.0f, 428.0f);
-    brush_->SetColor(pillBg);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(pillR, 10.0f, 10.0f), brush_.Get());
     brush_->SetColor(dotCol);
-    rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(34.0f, 418.0f), 3.5f, 3.5f), brush_.Get());
-    DrawTextLine(stateLabel, fmtMicro_.Get(),
-        D2D1::RectF(42.0f, 408.0f, 114.0f, 428.0f), dotCol);
+    rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(20.0f, 20.0f), 3.5f, 3.5f), brush_.Get());
 
-    wchar_t specBuf[64] = {};
-    if (status_.video.width > 0 && status_.video.height > 0) {
-        std::swprintf(specBuf, sizeof(specBuf) / sizeof(wchar_t), L"%up · %u",
-            status_.video.height, appliedCfg_.fps);
-    } else {
-        std::swprintf(specBuf, sizeof(specBuf) / sizeof(wchar_t), L"%u fps", appliedCfg_.fps);
-    }
-    DrawTextLine(specBuf, fmtMicro_.Get(),
-        D2D1::RectF(122.0f, 408.0f, 196.0f, 428.0f), kColTextSec, DWRITE_TEXT_ALIGNMENT_TRAILING);
+    DrawTextLine(L"Clipper", fmtBrand_.Get(), D2D1::RectF(34.0f, 0.0f, 88.0f, kTitleBarH), C(0xE4E4E7));
 
-    double activeMb = static_cast<double>(appliedCfg_.VideoArenaBytes() + appliedCfg_.AudioArenaBytes()) / (1024.0 * 1024.0);
+    std::wstring durStr = FormatReplayLengthShort(appliedCfg_.replaySeconds);
+    wchar_t specBuf[96] = {};
     if (status_.state == EngineState::Faulted && !status_.lastError.empty()) {
         std::wstring errW = Utf8ToWide(status_.lastError);
-        DrawTextLine(errW, fmtSmallWrap_.Get(),
-            D2D1::RectF(24.0f, 436.0f, 196.0f, 480.0f), kColRed,
-            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        DrawTextLine(errW, fmtMono_.Get(), D2D1::RectF(92.0f, 0.0f, 760.0f, kTitleBarH), kColRed);
+    } else if (status_.video.width > 0 && status_.video.height > 0) {
+        std::swprintf(specBuf, sizeof(specBuf) / sizeof(wchar_t), L"%up · %u fps · %ls",
+            status_.video.height, appliedCfg_.fps, durStr.c_str());
+        DrawTextLine(specBuf, fmtMono_.Get(), D2D1::RectF(92.0f, 0.0f, 680.0f, kTitleBarH), kColTextMuted);
     } else {
-        wchar_t ringInfo[96] = {};
-        std::swprintf(ringInfo, sizeof(ringInfo) / sizeof(wchar_t), L"%us replay · %u Mbps",
-            appliedCfg_.replaySeconds, appliedCfg_.bitrateMbps);
-        DrawTextLine(ringInfo, fmtBodySemi_.Get(),
-            D2D1::RectF(24.0f, 438.0f, 196.0f, 456.0f), kColText);
-
-        wchar_t memInfo[64] = {};
-        std::swprintf(memInfo, sizeof(memInfo) / sizeof(wchar_t), L"%.0f MB RAM · 0 B disk I/O", activeMb);
-        DrawTextLine(memInfo, fmtSmall_.Get(),
-            D2D1::RectF(24.0f, 457.0f, 196.0f, 475.0f), kColTextMuted);
+        std::swprintf(specBuf, sizeof(specBuf) / sizeof(wchar_t), L"%u fps · %ls",
+            appliedCfg_.fps, durStr.c_str());
+        DrawTextLine(specBuf, fmtMono_.Get(), D2D1::RectF(92.0f, 0.0f, 680.0f, kTitleBarH), kColTextMuted);
     }
 
-    DrawTextLine(L"Hotkey", fmtSmall_.Get(),
-        D2D1::RectF(24.0f, 488.0f, 68.0f, 512.0f), kColTextSec);
-    DrawKeycapGroup(72.0f, 500.0f, appliedCfg_.hotkeySave.display, false, 198.0f);
+    D2D1_RECT_F saveRect = D2D1::RectF(814.0f, 6.0f, 906.0f, 34.0f);
+    DrawFluentButton(saveRect, L"Save clip", L"\uE945", HitKey{ HitAction::TitleSaveClip, 0 }, false);
 
-    ui::IconId spark = ui::IconId::SparkSave;
-    DrawPillButton(D2D1::RectF(24.0f, 528.0f, 196.0f, 564.0f),
-        L"Save Clip", &spark, HitKey{ HitAction::SidebarSaveClip, 0 }, true);
+    D2D1_RECT_F minRect = D2D1::RectF(916.0f, 0.0f, 958.0f, kTitleBarH);
+    HitKey minKey{ HitAction::WinMinimize, 0 };
+    if (hoveredHit_ == minKey) {
+        brush_->SetColor(C(0xFFFFFF, 0.08f));
+        rt_->FillRectangle(minRect, brush_.Get());
+    }
+    DrawGlyph(L"\uE921", 10.0f, minRect, hoveredHit_ == minKey ? kColText : kColTextMuted);
+    hitTargets_.push_back({ minRect, minKey, false });
 
-    ui::IconId trayIco = ui::IconId::MinimizeTray;
-    ui::IconId quitIco = ui::IconId::PowerQuit;
-    DrawPillButton(D2D1::RectF(12.0f, 592.0f, 114.0f, 626.0f),
-        L"Tray", &trayIco, HitKey{ HitAction::SidebarHide, 0 }, false);
-    DrawPillButton(D2D1::RectF(122.0f, 592.0f, kSidebarW - 12.0f, 626.0f),
-        L"Quit", &quitIco, HitKey{ HitAction::SidebarQuit, 0 }, false, true);
+    D2D1_RECT_F closeRect = D2D1::RectF(958.0f, 0.0f, kWndW, kTitleBarH);
+    HitKey closeKey{ HitAction::WinClose, 0 };
+    if (hoveredHit_ == closeKey) {
+        brush_->SetColor(kColCloseHover);
+        rt_->FillRectangle(closeRect, brush_.Get());
+    }
+    DrawGlyph(L"\uE8BB", 10.0f, closeRect, hoveredHit_ == closeKey ? kColText : kColTextMuted);
+    hitTargets_.push_back({ closeRect, closeKey, false });
 }
 
-void SettingsWindow::DrawTopHeader() {
-    D2D1_RECT_F hdr = D2D1::RectF(kSidebarW, 0.0f, kWndW, kHeaderH);
-    brush_->SetColor(kColHeaderBg);
-    rt_->FillRectangle(hdr, brush_.Get());
+void SettingsWindow::DrawNavRail() {
+    struct RailDef {
+        SettingsTab tab;
+        const wchar_t* glyph;
+    };
+    const RailDef tabs[] = {
+        { SettingsTab::Clips, L"\uE714" },
+        { SettingsTab::Settings, L"\uE713" },
+    };
 
-    brush_->SetColor(kColDivider);
-    rt_->DrawLine(D2D1::Point2F(kSidebarW, kHeaderH), D2D1::Point2F(kWndW, kHeaderH), brush_.Get(), 1.0f);
+    float y = 48.0f;
+    for (const auto& t : tabs) {
+        D2D1_RECT_F r = D2D1::RectF(6.0f, y, kRailW - 6.0f, y + 38.0f);
+        HitKey key{ HitAction::SelectTab, static_cast<int>(t.tab) };
+        bool active = (activeTab_ == t.tab);
+        bool hovered = (hoveredHit_ == key);
 
-    std::wstring title;
-    std::wstring subtitle;
-    if (activeTab_ == SettingsTab::Clips) {
-        title = L"Recent Clips";
-        if (clips_.empty()) {
-            subtitle = L"Instant replay library";
-        } else {
-            wchar_t sub[96] = {};
-            std::wstring szText = FormatBytesHuman(totalClipsBytes_);
-            std::swprintf(sub, sizeof(sub) / sizeof(wchar_t), L"%zu %ls · %ls total",
-                clips_.size(), clips_.size() == 1 ? L"clip" : L"clips", szText.c_str());
-            subtitle = sub;
+        if (active || hovered) {
+            brush_->SetColor(active ? C(0xFFFFFF, 0.07f) : C(0xFFFFFF, 0.055f));
+            rt_->FillRoundedRectangle(D2D1::RoundedRect(r, 5.0f, 5.0f), brush_.Get());
         }
-        ui::IconId refIco = ui::IconId::RefreshArrows;
-        ui::IconId fldIco = ui::IconId::FolderOpen;
-        DrawPillButton(D2D1::RectF(774.0f, 18.0f, 808.0f, 50.0f),
-            L"", &refIco, HitKey{ HitAction::ClipsRefresh, 0 }, false);
-        DrawPillButton(D2D1::RectF(816.0f, 18.0f, 932.0f, 50.0f),
-            L"Open Folder", &fldIco, HitKey{ HitAction::ClipsOpenFolder, 0 }, false);
-    } else if (activeTab_ == SettingsTab::Capture) {
-        title = L"Capture & Quality";
-        subtitle = L"DXGI Desktop Duplication · NVENC H.264 low-latency P4";
-        ui::IconId refIco = ui::IconId::RefreshArrows;
-        DrawPillButton(D2D1::RectF(792.0f, 18.0f, 932.0f, 50.0f),
-            L"Refresh Displays", &refIco, HitKey{ HitAction::RefreshMonitors, 0 }, false);
-    } else if (activeTab_ == SettingsTab::Audio) {
-        title = L"Audio Channels";
-        subtitle = L"WASAPI 48 kHz stereo mixed into 192 kbps AAC-LC";
-    } else {
-        title = L"Hotkeys & Storage";
-        subtitle = L"Game-safe global trigger and fast-start MP4 destination";
+        if (active) {
+            brush_->SetColor(kColAccent);
+            rt_->FillRoundedRectangle(
+                D2D1::RoundedRect(D2D1::RectF(7.0f, y + 11.0f, 10.0f, y + 27.0f), 1.5f, 1.5f),
+                brush_.Get());
+        }
+
+        DrawGlyph(t.glyph, 16.0f, r, active ? kColText : (hovered ? kColTextSec : kColTextMuted));
+        hitTargets_.push_back({ r, key, false });
+        y += 44.0f;
     }
 
-    DrawTextLine(title, fmtPageTitle_.Get(),
-        D2D1::RectF(kSidebarW + kContentPadL, 12.0f, 760.0f, 38.0f), kColText);
-    DrawTextLine(subtitle, fmtSmall_.Get(),
-        D2D1::RectF(kSidebarW + kContentPadL, 38.0f, 760.0f, 56.0f), kColTextMuted);
+    auto drawBottomBtn = [&](float topY, const wchar_t* glyph, HitAction action) {
+        D2D1_RECT_F r = D2D1::RectF(6.0f, topY, kRailW - 6.0f, topY + 38.0f);
+        HitKey key{ action, 0 };
+        bool hovered = (hoveredHit_ == key);
+        if (hovered) {
+            brush_->SetColor(C(0xFFFFFF, 0.055f));
+            rt_->FillRoundedRectangle(D2D1::RoundedRect(r, 5.0f, 5.0f), brush_.Get());
+        }
+        DrawGlyph(glyph, 16.0f, r, hovered ? kColText : kColTextMuted);
+        hitTargets_.push_back({ r, key, false });
+    };
+
+    drawBottomBtn(kWndH - 92.0f, L"\uE89F", HitAction::RailHide);
+    drawBottomBtn(kWndH - 50.0f, L"\uE7E8", HitAction::RailQuit);
+}
+
+void SettingsWindow::DrawPageHeader() {
+    if (activeTab_ == SettingsTab::Clips) {
+        DrawTextLine(L"Recent clips", fmtPageTitle_.Get(),
+            D2D1::RectF(kContentX, 46.0f, kContentX + 160.0f, 82.0f), kColText);
+
+        wchar_t sub[96] = {};
+        if (clips_.empty()) {
+            std::swprintf(sub, sizeof(sub) / sizeof(wchar_t), L"No saved files");
+        } else {
+            std::wstring szText = FormatBytesHuman(totalClipsBytes_);
+            std::swprintf(sub, sizeof(sub) / sizeof(wchar_t), L"%zu %ls · %ls",
+                clips_.size(), clips_.size() == 1 ? L"clip" : L"clips", szText.c_str());
+        }
+        DrawTextLine(sub, fmtBody_.Get(),
+            D2D1::RectF(kContentX + 136.0f, 52.0f, 700.0f, 80.0f), kColTextMuted);
+
+        DrawFluentButton(D2D1::RectF(774.0f, 48.0f, 858.0f, 78.0f),
+            L"Refresh", L"\uE72C", HitKey{ HitAction::ClipsRefresh, 0 }, false);
+        DrawFluentButton(D2D1::RectF(866.0f, 48.0f, kWndW - kContentPadR, 78.0f),
+            L"Open folder", L"\uE838", HitKey{ HitAction::ClipsOpenFolder, 0 }, false);
+    } else {
+        DrawTextLine(L"Settings", fmtPageTitle_.Get(),
+            D2D1::RectF(kContentX, 46.0f, kContentX + 110.0f, 82.0f), kColText);
+        DrawTextLine(L"DXGI · H.264 NVENC", fmtMono_.Get(),
+            D2D1::RectF(kContentX + 100.0f, 52.0f, 520.0f, 80.0f), kColTextMuted);
+
+        DrawFluentButton(D2D1::RectF(832.0f, 48.0f, kWndW - kContentPadR, 78.0f),
+            L"Refresh displays", L"\uE72C", HitKey{ HitAction::RefreshMonitors, 0 }, false);
+    }
 }
 
 void SettingsWindow::DrawClipsTab(float contentX, float contentW, float& yCursor) {
     if (clips_.empty()) {
-        D2D1_RECT_F card = D2D1::RectF(contentX + 78.0f, yCursor + 78.0f, contentX + contentW - 78.0f, yCursor + 362.0f);
-        brush_->SetColor(kColCard);
-        rt_->FillRoundedRectangle(D2D1::RoundedRect(card, 14.0f, 14.0f), brush_.Get());
-        brush_->SetColor(kColBorder);
-        rt_->DrawRoundedRectangle(D2D1::RoundedRect(card, 14.0f, 14.0f), brush_.Get(), 1.0f);
+        D2D1_RECT_F card = D2D1::RectF(contentX + 200.0f, yCursor + 86.0f, contentX + contentW - 200.0f, yCursor + 346.0f);
+        DrawFluentSurface(card, 8.0f, false, false);
 
         float cx = (card.left + card.right) * 0.5f;
-        float icoCy = card.top + 66.0f;
-        brush_->SetColor(kColAccentTint);
-        rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, icoCy), 28.0f, 28.0f), brush_.Get());
-        brush_->SetColor(C(0x818CF8));
-        ui::DrawVectorIcon(rt_.Get(), d2dFactory_.Get(), brush_.Get(), roundStroke_.Get(), ui::IconId::FilmClips,
-            D2D1::RectF(cx - 14.0f, icoCy - 14.0f, cx + 14.0f, icoCy + 14.0f), 1.7f);
-
+        DrawGlyph(L"\uE714", 30.0f, D2D1::RectF(cx - 24.0f, card.top + 38.0f, cx + 24.0f, card.top + 82.0f), kColTextMuted);
         DrawTextLine(L"No clips saved yet", fmtPageTitle_.Get(),
-            D2D1::RectF(card.left + 24.0f, card.top + 108.0f, card.right - 24.0f, card.top + 136.0f),
+            D2D1::RectF(card.left + 20.0f, card.top + 92.0f, card.right - 20.0f, card.top + 124.0f),
             kColText, DWRITE_TEXT_ALIGNMENT_CENTER);
 
-        wchar_t msg[192] = {};
-        std::swprintf(msg, sizeof(msg) / sizeof(wchar_t),
-            L"Press %ls during gameplay to save the last %us buffer.",
-            Utf8ToWide(appliedCfg_.hotkeySave.display).c_str(), appliedCfg_.replaySeconds);
-        DrawTextLine(msg, fmtBody_.Get(),
-            D2D1::RectF(card.left + 32.0f, card.top + 144.0f, card.right - 32.0f, card.top + 170.0f),
-            kColTextSec, DWRITE_TEXT_ALIGNMENT_CENTER);
+        std::wstring hk = Utf8ToWide(appliedCfg_.hotkeySave.display);
+        std::wstring line = L"Press " + hk + L" during gameplay to save a replay.";
+        DrawTextLine(line, fmtBody_.Get(),
+            D2D1::RectF(card.left + 24.0f, card.top + 132.0f, card.right - 24.0f, card.top + 156.0f),
+            kColTextMuted, DWRITE_TEXT_ALIGNMENT_CENTER);
 
-        ui::IconId spark = ui::IconId::SparkSave;
-        ui::IconId sliders = ui::IconId::SlidersTune;
-        DrawPillButton(D2D1::RectF(cx - 148.0f, card.top + 198.0f, cx - 8.0f, card.top + 236.0f),
-            L"Save Clip Now", &spark, HitKey{ HitAction::SidebarSaveClip, 0 }, true);
-        hitTargets_.back().inViewport = true;
-        DrawPillButton(D2D1::RectF(cx + 8.0f, card.top + 198.0f, cx + 158.0f, card.top + 236.0f),
-            L"Capture Setup", &sliders, HitKey{ HitAction::EmptyGoCapture, 0 }, false);
-        hitTargets_.back().inViewport = true;
+        DrawFluentButton(D2D1::RectF(cx - 122.0f, card.top + 184.0f, cx - 6.0f, card.top + 218.0f),
+            L"Save clip", L"\uE945", HitKey{ HitAction::TitleSaveClip, 0 }, true, false, true);
+        DrawFluentButton(D2D1::RectF(cx + 6.0f, card.top + 184.0f, cx + 122.0f, card.top + 218.0f),
+            L"Settings", L"\uE713", HitKey{ HitAction::EmptyGoSettings, 0 }, false, false, true);
 
-        yCursor += 380.0f;
+        yCursor += 360.0f;
         return;
     }
 
     float colGap = 16.0f;
-    float cardW = (contentW - colGap) * 0.5f;
-    float thumbH = 170.0f;
-    float footH = 58.0f;
-    float cardH = thumbH + footH;
-    float rowGap = 14.0f;
+    float cardW = (contentW - colGap * 2.0f) / 3.0f;
+    float thumbH = std::floor(cardW * 9.0f / 16.0f);
+    float metaH = 48.0f;
+    float cardH = thumbH + metaH;
+    float rowGap = 18.0f;
 
-    float baseTop = yCursor + 16.0f;
+    float baseTop = yCursor + 6.0f;
     for (size_t i = 0; i < clips_.size(); ++i) {
-        size_t col = i % 2;
-        size_t row = i / 2;
+        size_t col = i % 3;
+        size_t row = i / 3;
         float x = contentX + static_cast<float>(col) * (cardW + colGap);
         float y = baseTop + static_cast<float>(row) * (cardH + rowGap) - scrollY_;
 
-        if (y + cardH < kViewTop - 20.0f || y > kViewBottom + 20.0f) {
-            continue;
-        }
+        if (y + cardH < kViewTop - 20.0f || y > kViewBottom + 20.0f) continue;
 
         const ClipEntry& clip = clips_[i];
-        D2D1_RECT_F cardR = D2D1::RectF(x, y, x + cardW, y + cardH);
         D2D1_RECT_F thumbR = D2D1::RectF(x, y, x + cardW, y + thumbH);
+        D2D1_ROUNDED_RECT thumbRR = D2D1::RoundedRect(thumbR, 8.0f, 8.0f);
 
         HitKey playKey{ HitAction::ClipPlay, static_cast<int>(i) };
         HitKey folderKey{ HitAction::ClipShowInFolder, static_cast<int>(i) };
         HitKey deleteKey{ HitAction::ClipDelete, static_cast<int>(i) };
-        bool cardHovered = (hoveredHit_ == playKey || hoveredHit_ == folderKey || hoveredHit_ == deleteKey);
         bool thumbHovered = (hoveredHit_ == playKey);
-
-        D2D1_ROUNDED_RECT cardRR = D2D1::RoundedRect(cardR, 10.0f, 10.0f);
-        brush_->SetColor(cardHovered ? kColCardHover : kColCard);
-        rt_->FillRoundedRectangle(cardRR, brush_.Get());
 
         auto thumbIt = thumbCache_.find(clip.fullPath);
         ID2D1Bitmap* bmp = (thumbIt != thumbCache_.end()) ? thumbIt->second.bmp.Get() : nullptr;
@@ -952,12 +1082,12 @@ void SettingsWindow::DrawClipsTab(float contentX, float contentW, float& yCursor
         Microsoft::WRL::ComPtr<ID2D1RoundedRectangleGeometry> clipGeo;
         Microsoft::WRL::ComPtr<ID2D1Layer> clipLayer;
         if (d2dFactory_ &&
-            SUCCEEDED(d2dFactory_->CreateRoundedRectangleGeometry(cardRR, &clipGeo)) &&
+            SUCCEEDED(d2dFactory_->CreateRoundedRectangleGeometry(thumbRR, &clipGeo)) &&
             SUCCEEDED(rt_->CreateLayer(&clipLayer))) {
             D2D1_LAYER_PARAMETERS lp = D2D1::LayerParameters(thumbR, clipGeo.Get());
             rt_->PushLayer(&lp, clipLayer.Get());
 
-            brush_->SetColor(kColWell);
+            brush_->SetColor(C(0x141518));
             rt_->FillRectangle(thumbR, brush_.Get());
 
             if (bmp) {
@@ -978,23 +1108,19 @@ void SettingsWindow::DrawClipsTab(float contentX, float contentW, float& yCursor
                 }
                 rt_->DrawBitmap(bmp, thumbR, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, srcR);
             } else {
-                float tcx = (thumbR.left + thumbR.right) * 0.5f;
-                float tcy = (thumbR.top + thumbR.bottom) * 0.5f;
-                brush_->SetColor(C(0x282C3C));
-                ui::DrawVectorIcon(rt_.Get(), d2dFactory_.Get(), brush_.Get(), roundStroke_.Get(),
-                    ui::IconId::FilmClips, D2D1::RectF(tcx - 16.0f, tcy - 16.0f, tcx + 16.0f, tcy + 16.0f), 1.6f);
+                DrawGlyph(L"\uE714", 24.0f, thumbR, C(0x52525B));
             }
 
             if (thumbHovered) {
-                brush_->SetColor(C(0x090A0E, 0.45f));
+                brush_->SetColor(C(0x0E0F11, 0.45f));
                 rt_->FillRectangle(thumbR, brush_.Get());
                 float tcx = (thumbR.left + thumbR.right) * 0.5f;
                 float tcy = (thumbR.top + thumbR.bottom) * 0.5f;
-                brush_->SetColor(C(0x5E6AD2, 0.92f));
-                rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(tcx, tcy), 22.0f, 22.0f), brush_.Get());
-                brush_->SetColor(C(0xFFFFFF));
-                ui::DrawVectorIcon(rt_.Get(), d2dFactory_.Get(), brush_.Get(), roundStroke_.Get(),
-                    ui::IconId::PlayTriangle, D2D1::RectF(tcx - 9.0f, tcy - 10.0f, tcx + 11.0f, tcy + 10.0f), 1.5f);
+                brush_->SetColor(C(0x141518, 0.85f));
+                rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(tcx, tcy), 20.0f, 20.0f), brush_.Get());
+                brush_->SetColor(C(0xFFFFFF, 0.25f));
+                rt_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(tcx, tcy), 20.0f, 20.0f), brush_.Get(), 1.0f);
+                DrawGlyph(L"\uE768", 14.0f, D2D1::RectF(tcx - 10.0f, tcy - 10.0f, tcx + 12.0f, tcy + 10.0f), kColText);
             }
 
             rt_->PopLayer();
@@ -1002,628 +1128,332 @@ void SettingsWindow::DrawClipsTab(float contentX, float contentW, float& yCursor
 
         std::wstring badgeTxt = FormatDurationShort(clip.durationSec);
         if (badgeTxt.empty()) badgeTxt = FormatBytesHuman(clip.sizeBytes);
-        float badgeW = std::max(44.0f, static_cast<float>(badgeTxt.size()) * 7.8f + 14.0f);
+        float badgeW = std::max(40.0f, static_cast<float>(badgeTxt.size()) * 7.4f + 12.0f);
         D2D1_RECT_F badgeR = D2D1::RectF(
-            thumbR.right - badgeW - 10.0f, thumbR.bottom - 28.0f,
-            thumbR.right - 10.0f, thumbR.bottom - 8.0f);
-        brush_->SetColor(C(0x0B0C10, 0.86f));
-        rt_->FillRoundedRectangle(D2D1::RoundedRect(badgeR, 5.0f, 5.0f), brush_.Get());
-        brush_->SetColor(C(0xFFFFFF, 0.14f));
-        rt_->DrawRoundedRectangle(D2D1::RoundedRect(badgeR, 5.0f, 5.0f), brush_.Get(), 1.0f);
-        DrawTextLine(badgeTxt, fmtMono_.Get(), badgeR, kColText,
-            DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            thumbR.right - badgeW - 8.0f, thumbR.bottom - 24.0f,
+            thumbR.right - 8.0f, thumbR.bottom - 8.0f);
+        brush_->SetColor(C(0x0E0F11, 0.82f));
+        rt_->FillRoundedRectangle(D2D1::RoundedRect(badgeR, 4.0f, 4.0f), brush_.Get());
+        DrawTextLine(badgeTxt, fmtMono_.Get(), badgeR, kColAccent, DWRITE_TEXT_ALIGNMENT_CENTER);
 
-        brush_->SetColor(kColDivider);
-        rt_->DrawLine(D2D1::Point2F(cardR.left, thumbR.bottom), D2D1::Point2F(cardR.right, thumbR.bottom), brush_.Get(), 1.0f);
+        hitTargets_.push_back({ thumbR, playKey, true });
 
-        brush_->SetColor(cardHovered ? kColBorderHover : kColBorder);
-        rt_->DrawRoundedRectangle(cardRR, brush_.Get(), 1.0f);
-
-        float textRight = cardR.right - 74.0f;
+        float textRight = thumbR.right - 60.0f;
         DrawTextLine(clip.displayTitle, fmtBodySemi_.Get(),
-            D2D1::RectF(cardR.left + 14.0f, thumbR.bottom + 9.0f, textRight, thumbR.bottom + 29.0f),
-            kColText);
+            D2D1::RectF(x + 2.0f, thumbR.bottom + 8.0f, textRight, thumbR.bottom + 26.0f), kColText);
 
         std::wstring meta = clip.dateLabel;
         if (!meta.empty()) meta += L" · ";
         meta += FormatBytesHuman(clip.sizeBytes);
         DrawTextLine(meta, fmtSmall_.Get(),
-            D2D1::RectF(cardR.left + 14.0f, thumbR.bottom + 30.0f, textRight, thumbR.bottom + 48.0f),
-            kColTextMuted);
+            D2D1::RectF(x + 2.0f, thumbR.bottom + 27.0f, textRight, thumbR.bottom + 44.0f), kColTextMuted);
 
-        hitTargets_.push_back({ thumbR, playKey, true });
+        auto drawBareAct = [&](D2D1_RECT_F r, const wchar_t* glyph, HitKey k, bool danger) {
+            bool h = (hoveredHit_ == k);
+            if (h) {
+                brush_->SetColor(danger ? C(0xEF4444, 0.16f) : C(0xFFFFFF, 0.08f));
+                rt_->FillRoundedRectangle(D2D1::RoundedRect(r, 4.0f, 4.0f), brush_.Get());
+            }
+            DrawGlyph(glyph, 13.0f, r, h ? (danger ? kColRed : kColText) : kColTextMuted);
+            hitTargets_.push_back({ r, k, true });
+        };
 
-        ui::IconId fld = ui::IconId::FolderOpen;
-        ui::IconId del = ui::IconId::TrashBin;
-        DrawPillButton(D2D1::RectF(cardR.right - 68.0f, thumbR.bottom + 15.0f, cardR.right - 40.0f, thumbR.bottom + 43.0f),
-            L"", &fld, folderKey, false);
-        hitTargets_.back().inViewport = true;
-        DrawPillButton(D2D1::RectF(cardR.right - 36.0f, thumbR.bottom + 15.0f, cardR.right - 8.0f, thumbR.bottom + 43.0f),
-            L"", &del, deleteKey, false, true);
-        hitTargets_.back().inViewport = true;
+        drawBareAct(D2D1::RectF(thumbR.right - 56.0f, thumbR.bottom + 12.0f, thumbR.right - 30.0f, thumbR.bottom + 38.0f),
+            L"\uE8B7", folderKey, false);
+        drawBareAct(D2D1::RectF(thumbR.right - 26.0f, thumbR.bottom + 12.0f, thumbR.right, thumbR.bottom + 38.0f),
+            L"\uE74D", deleteKey, true);
     }
 
-    size_t rows = (clips_.size() + 1) / 2;
-    yCursor += 16.0f + static_cast<float>(rows) * cardH + static_cast<float>(rows > 0 ? rows - 1 : 0) * rowGap + 18.0f;
+    size_t rows = (clips_.size() + 2) / 3;
+    yCursor += 6.0f + static_cast<float>(rows) * cardH + static_cast<float>(rows > 0 ? rows - 1 : 0) * rowGap + 14.0f;
 }
 
-void SettingsWindow::DrawCaptureTab(float contentX, float contentW, float& yCursor) {
-    float y = yCursor + 14.0f - scrollY_;
+void SettingsWindow::DrawSettingsTab(float contentX, float contentW, float& yCursor) {
+    float y = yCursor + 6.0f - scrollY_;
+    float rightEdge = contentX + contentW - 16.0f;
+    float gap = 6.0f;
 
-    DrawTextLine(L"Display Source", fmtSection_.Get(),
-        D2D1::RectF(contentX, y, contentX + contentW, y + 20.0f), kColTextSec);
-    y += 26.0f;
-
-    float colGap = 16.0f;
-    float monCardW = (contentW - colGap) * 0.5f;
-    float monCardH = 84.0f;
+    auto drawRowHeader = [&](float rowTop, float rowH, const wchar_t* glyph, const wchar_t* title) {
+        DrawFluentSurface(D2D1::RectF(contentX, rowTop, contentX + contentW, rowTop + rowH), 6.0f, false, false);
+        DrawGlyph(glyph, 17.0f, D2D1::RectF(contentX + 16.0f, rowTop, contentX + 38.0f, rowTop + rowH), C(0xE4E4E7));
+        DrawTextLine(title, fmtRowTitle_.Get(),
+            D2D1::RectF(contentX + 50.0f, rowTop, contentX + 320.0f, rowTop + rowH), kColText);
+    };
 
     size_t monCount = monitors_.empty() ? 1 : monitors_.size();
+    size_t monCols = 2;
+    size_t monRows = (monCount + monCols - 1) / monCols;
+    float tileW = 196.0f;
+    float tileH = 50.0f;
+    float tileGapX = 8.0f;
+    float tileGapY = 8.0f;
+    float row1H = std::max(70.0f, 20.0f + static_cast<float>(monRows) * tileH + static_cast<float>(monRows > 0 ? monRows - 1 : 0) * tileGapY);
+
+    drawRowHeader(y, row1H, L"\uE7F4", L"Display source");
     for (size_t i = 0; i < monCount; ++i) {
-        size_t col = i % 2;
-        size_t row = i / 2;
-        float x = contentX + static_cast<float>(col) * (monCardW + colGap);
-        float cy = y + static_cast<float>(row) * (monCardH + 12.0f);
+        size_t col = i % monCols;
+        size_t row = i / monCols;
+        size_t colsInRow = (row == monRows - 1 && (monCount % monCols) != 0) ? (monCount % monCols) : monCols;
+        float rowTilesW = static_cast<float>(colsInRow) * tileW + static_cast<float>(colsInRow - 1) * tileGapX;
+        float tx = (rightEdge - rowTilesW) + static_cast<float>(col) * (tileW + tileGapX);
+        float ty = y + 10.0f + static_cast<float>(row) * (tileH + tileGapY);
 
         uint32_t monIdx = monitors_.empty() ? 0 : monitors_[i].index;
         bool selected = (editedCfg_.monitorIndex == monIdx);
         HitKey key{ HitAction::SelectMonitor, static_cast<int>(monIdx) };
         bool hovered = (hoveredHit_ == key);
+        D2D1_RECT_F tr = D2D1::RectF(tx, ty, tx + tileW, ty + tileH);
 
-        D2D1_RECT_F card = D2D1::RectF(x, cy, x + monCardW, cy + monCardH);
-        brush_->SetColor(selected ? kColAccentTint : (hovered ? kColCardHover : kColCard));
-        rt_->FillRoundedRectangle(D2D1::RoundedRect(card, 10.0f, 10.0f), brush_.Get());
-        brush_->SetColor(selected ? kColAccentBorder : (hovered ? kColBorderHover : kColBorder));
-        rt_->DrawRoundedRectangle(D2D1::RoundedRect(card, 10.0f, 10.0f), brush_.Get(), selected ? 1.5f : 1.0f);
+        DrawFluentSurface(tr, 5.0f, hovered, selected);
 
-        D2D1_RECT_F bezel = D2D1::RectF(x + 16.0f, cy + 19.0f, x + 64.0f, cy + 51.0f);
-        brush_->SetColor(kColWell);
-        rt_->FillRoundedRectangle(D2D1::RoundedRect(bezel, 4.0f, 4.0f), brush_.Get());
-        brush_->SetColor(selected ? kColAccent : kColBorderHover);
-        rt_->DrawRoundedRectangle(D2D1::RoundedRect(bezel, 4.0f, 4.0f), brush_.Get(), 1.5f);
-        rt_->DrawLine(D2D1::Point2F(x + 40.0f, cy + 51.0f), D2D1::Point2F(x + 40.0f, cy + 60.0f), brush_.Get(), 2.0f);
-        rt_->DrawLine(D2D1::Point2F(x + 28.0f, cy + 60.0f), D2D1::Point2F(x + 52.0f, cy + 60.0f), brush_.Get(), 2.0f);
+        wchar_t labelBuf[128] = {};
+        std::wstring friendly = monitors_.empty() ? L"Primary Display" : monitors_[i].friendlyName;
+        if (friendly.empty()) friendly = L"Display";
+        std::swprintf(labelBuf, sizeof(labelBuf) / sizeof(wchar_t), L"%u. %ls", monIdx + 1, friendly.c_str());
+        DrawTextLine(labelBuf, fmtBodySemi_.Get(), D2D1::RectF(tx + 11.0f, ty + 6.0f, tx + tileW - 10.0f, ty + 25.0f), kColText);
 
-        wchar_t numBuf[16] = {};
-        std::swprintf(numBuf, sizeof(numBuf) / sizeof(wchar_t), L"%u", monIdx + 1);
-        DrawTextLine(numBuf, fmtSection_.Get(), bezel,
-            selected ? C(0xC7D2FE) : kColTextSec, DWRITE_TEXT_ALIGNMENT_CENTER);
-
-        std::wstring name = monitors_.empty() ? L"Primary Display" : monitors_[i].friendlyName;
-        if (name.empty()) name = L"Display " + std::wstring(numBuf);
-        DrawTextLine(name, fmtBodySemi_.Get(),
-            D2D1::RectF(x + 78.0f, cy + 16.0f, card.right - 38.0f, cy + 36.0f), kColText);
-
-        wchar_t meta[96] = {};
+        wchar_t metaBuf[64] = {};
         if (!monitors_.empty() && monitors_[i].width > 0 && monitors_[i].height > 0) {
             if (monitors_[i].refreshHz > 0) {
-                std::swprintf(meta, sizeof(meta) / sizeof(wchar_t), L"%u × %u · %u Hz",
+                std::swprintf(metaBuf, sizeof(metaBuf) / sizeof(wchar_t), L"%ux%u · %uHz",
                     monitors_[i].width, monitors_[i].height, monitors_[i].refreshHz);
             } else {
-                std::swprintf(meta, sizeof(meta) / sizeof(wchar_t), L"%u × %u",
+                std::swprintf(metaBuf, sizeof(metaBuf) / sizeof(wchar_t), L"%ux%u",
                     monitors_[i].width, monitors_[i].height);
             }
         } else {
-            std::swprintf(meta, sizeof(meta) / sizeof(wchar_t), L"DXGI Output %u", monIdx + 1);
+            std::swprintf(metaBuf, sizeof(metaBuf) / sizeof(wchar_t), L"DXGI Output %u", monIdx + 1);
         }
-        DrawTextLine(meta, fmtSmall_.Get(),
-            D2D1::RectF(x + 78.0f, cy + 38.0f, card.right - 16.0f, cy + 56.0f), kColTextSec);
+        DrawTextLine(metaBuf, fmtMono_.Get(), D2D1::RectF(tx + 11.0f, ty + 25.0f, tx + tileW - 10.0f, ty + 43.0f), kColTextMuted);
+        hitTargets_.push_back({ tr, key, true });
+    }
+    y += row1H + gap;
 
-        if (!monitors_.empty() && monitors_[i].isPrimary) {
-            D2D1_RECT_F primPill = D2D1::RectF(x + 78.0f, cy + 59.0f, x + 132.0f, cy + 75.0f);
-            brush_->SetColor(selected ? C(0x5E6AD2, 0.25f) : kColWell);
-            rt_->FillRoundedRectangle(D2D1::RoundedRect(primPill, 4.0f, 4.0f), brush_.Get());
-            DrawTextLine(L"Primary", fmtMicro_.Get(), primPill,
-                selected ? C(0xC7D2FE) : kColTextMuted, DWRITE_TEXT_ALIGNMENT_CENTER);
+    float rowH = 56.0f;
+    drawRowHeader(y, rowH, L"\uE714", L"Frame rate");
+    {
+        float segW = 46.0f;
+        float capW = static_cast<float>(std::size(kFpsPresets)) * segW + 6.0f;
+        float capRight = rightEdge - 106.0f;
+        D2D1_RECT_F capR = D2D1::RectF(capRight - capW, y + 12.0f, capRight, y + 44.0f);
+        brush_->SetColor(kColWell);
+        rt_->FillRoundedRectangle(D2D1::RoundedRect(capR, 5.0f, 5.0f), brush_.Get());
+        brush_->SetColor(kColBorder);
+        rt_->DrawRoundedRectangle(D2D1::RoundedRect(capR, 5.0f, 5.0f), brush_.Get(), 1.0f);
+
+        for (size_t i = 0; i < std::size(kFpsPresets); ++i) {
+            uint32_t fps = kFpsPresets[i];
+            D2D1_RECT_F sr = D2D1::RectF(
+                capR.left + 3.0f + static_cast<float>(i) * segW, capR.top + 3.0f,
+                capR.left + 3.0f + static_cast<float>(i + 1) * segW, capR.bottom - 3.0f);
+            HitKey key{ HitAction::SelectFpsPreset, static_cast<int>(fps) };
+            bool active = (editedCfg_.fps == fps);
+            bool hov = (hoveredHit_ == key);
+            if (active || hov) {
+                brush_->SetColor(active ? C(0xFFFFFF, 0.14f) : C(0xFFFFFF, 0.06f));
+                rt_->FillRoundedRectangle(D2D1::RoundedRect(sr, 4.0f, 4.0f), brush_.Get());
+            }
+            std::wstring txt = std::to_wstring(fps);
+            DrawTextLine(txt, active ? fmtBodySemi_.Get() : fmtBody_.Get(), sr,
+                active ? kColText : kColTextMuted, DWRITE_TEXT_ALIGNMENT_CENTER);
+            hitTargets_.push_back({ sr, key, true });
         }
 
-        if (selected) {
-            brush_->SetColor(C(0x818CF8));
-            ui::DrawVectorIcon(rt_.Get(), d2dFactory_.Get(), brush_.Get(), roundStroke_.Get(),
-                ui::IconId::CheckCircle,
-                D2D1::RectF(card.right - 30.0f, cy + 14.0f, card.right - 12.0f, cy + 32.0f), 1.8f);
+        DrawEditBox(D2D1::RectF(rightEdge - 94.0f, y + 12.0f, rightEdge - 30.0f, y + 44.0f),
+            std::to_wstring(editedCfg_.fps), InputMode::EditFps, HitKey{ HitAction::EditFpsBox, 0 });
+        DrawTextLine(L"fps", fmtSmall_.Get(), D2D1::RectF(rightEdge - 25.0f, y, rightEdge + 4.0f, y + rowH), kColTextMuted);
+    }
+    y += rowH + gap;
+
+    drawRowHeader(y, rowH, L"\uE916", L"Replay length");
+    {
+        float segW = 44.0f;
+        float capW = static_cast<float>(std::size(kReplayPresetsSec)) * segW + 6.0f;
+        float capRight = rightEdge - 182.0f;
+        D2D1_RECT_F capR = D2D1::RectF(capRight - capW, y + 12.0f, capRight, y + 44.0f);
+        brush_->SetColor(kColWell);
+        rt_->FillRoundedRectangle(D2D1::RoundedRect(capR, 5.0f, 5.0f), brush_.Get());
+        brush_->SetColor(kColBorder);
+        rt_->DrawRoundedRectangle(D2D1::RoundedRect(capR, 5.0f, 5.0f), brush_.Get(), 1.0f);
+
+        for (size_t i = 0; i < std::size(kReplayPresetsSec); ++i) {
+            uint32_t sec = kReplayPresetsSec[i];
+            D2D1_RECT_F sr = D2D1::RectF(
+                capR.left + 3.0f + static_cast<float>(i) * segW, capR.top + 3.0f,
+                capR.left + 3.0f + static_cast<float>(i + 1) * segW, capR.bottom - 3.0f);
+            HitKey key{ HitAction::SelectReplayPreset, static_cast<int>(sec) };
+            bool active = (editedCfg_.replaySeconds == sec);
+            bool hov = (hoveredHit_ == key);
+            if (active || hov) {
+                brush_->SetColor(active ? C(0xFFFFFF, 0.14f) : C(0xFFFFFF, 0.06f));
+                rt_->FillRoundedRectangle(D2D1::RoundedRect(sr, 4.0f, 4.0f), brush_.Get());
+            }
+            std::wstring lbl = FormatReplayLengthShort(sec);
+            DrawTextLine(lbl, active ? fmtBodySemi_.Get() : fmtBody_.Get(), sr,
+                active ? kColText : kColTextMuted, DWRITE_TEXT_ALIGNMENT_CENTER);
+            hitTargets_.push_back({ sr, key, true });
         }
 
-        hitTargets_.push_back({ card, key, true });
-    }
+        std::wstring customVal = FormatReplayBoxValue(editedCfg_.replaySeconds, replayUnitMinutes_);
+        DrawEditBox(D2D1::RectF(rightEdge - 170.0f, y + 12.0f, rightEdge - 96.0f, y + 44.0f),
+            customVal, InputMode::EditReplay, HitKey{ HitAction::EditReplayBox, 0 });
 
-    size_t monRows = (monCount + 1) / 2;
-    y += static_cast<float>(monRows) * monCardH + static_cast<float>(monRows > 0 ? monRows - 1 : 0) * 12.0f + 16.0f;
+        D2D1_RECT_F unitR = D2D1::RectF(rightEdge - 88.0f, y + 12.0f, rightEdge, y + 44.0f);
+        brush_->SetColor(kColWell);
+        rt_->FillRoundedRectangle(D2D1::RoundedRect(unitR, 5.0f, 5.0f), brush_.Get());
+        brush_->SetColor(kColBorder);
+        rt_->DrawRoundedRectangle(D2D1::RoundedRect(unitR, 5.0f, 5.0f), brush_.Get(), 1.0f);
 
-    DrawTextLine(L"Quality Preset", fmtSection_.Get(),
-        D2D1::RectF(contentX, y, contentX + contentW, y + 20.0f), kColTextSec);
-    y += 26.0f;
-
-    struct PresetDef {
-        HitAction action;
-        const wchar_t* title;
-        const wchar_t* sub;
-        const wchar_t* tag;
-        uint32_t fps;
-        uint32_t bitrate;
-    };
-    const PresetDef presets[] = {
-        { HitAction::PresetCompetitive, L"Competitive", L"60 fps · 20 Mbps", L"Recommended", 60, 20 },
-        { HitAction::PresetHigh, L"High Quality", L"60 fps · 40 Mbps", L"Sharp Detail", 60, 40 },
-        { HitAction::PresetCompact, L"Compact", L"30 fps · 10 Mbps", L"Low RAM", 30, 10 },
-    };
-
-    float preGap = 14.0f;
-    float preW = (contentW - preGap * 2.0f) / 3.0f;
-    float preH = 66.0f;
-    for (int i = 0; i < 3; ++i) {
-        const auto& p = presets[i];
-        float px = contentX + static_cast<float>(i) * (preW + preGap);
-        D2D1_RECT_F pr = D2D1::RectF(px, y, px + preW, y + preH);
-        HitKey key{ p.action, 0 };
-        bool active = (editedCfg_.fps == p.fps && editedCfg_.bitrateMbps == p.bitrate);
-        bool hovered = (hoveredHit_ == key);
-
-        brush_->SetColor(active ? kColAccentTint : (hovered ? kColCardHover : kColCard));
-        rt_->FillRoundedRectangle(D2D1::RoundedRect(pr, 9.0f, 9.0f), brush_.Get());
-        brush_->SetColor(active ? kColAccentBorder : (hovered ? kColBorderHover : kColBorder));
-        rt_->DrawRoundedRectangle(D2D1::RoundedRect(pr, 9.0f, 9.0f), brush_.Get(), active ? 1.5f : 1.0f);
-
-        DrawTextLine(p.title, fmtBodySemi_.Get(),
-            D2D1::RectF(px + 14.0f, y + 12.0f, px + preW - 88.0f, y + 32.0f), kColText);
-        DrawTextLine(p.sub, fmtSmall_.Get(),
-            D2D1::RectF(px + 14.0f, y + 36.0f, px + preW - 14.0f, y + 54.0f),
-            active ? C(0xC7D2FE) : kColTextMuted);
-
-        D2D1_RECT_F tagR = D2D1::RectF(px + preW - 86.0f, y + 12.0f, px + preW - 10.0f, y + 30.0f);
-        brush_->SetColor(active ? C(0x5E6AD2, 0.25f) : kColWell);
-        rt_->FillRoundedRectangle(D2D1::RoundedRect(tagR, 4.0f, 4.0f), brush_.Get());
-        DrawTextLine(p.tag, fmtMicro_.Get(), tagR,
-            active ? C(0xC7D2FE) : kColTextMuted, DWRITE_TEXT_ALIGNMENT_CENTER);
-
-        hitTargets_.push_back({ pr, key, true });
-    }
-    y += preH + 16.0f;
-
-    DrawTextLine(L"Buffer & Encoding", fmtSection_.Get(),
-        D2D1::RectF(contentX, y, contentX + contentW, y + 20.0f), kColTextSec);
-    y += 26.0f;
-
-    float r1H = 48.0f, r2H = 50.0f, r3H = 60.0f, r4H = 50.0f;
-    float cardTotH = r1H + r2H + r3H + r4H;
-    D2D1_RECT_F fineCard = D2D1::RectF(contentX, y, contentX + contentW, y + cardTotH);
-    brush_->SetColor(kColCard);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(fineCard, 10.0f, 10.0f), brush_.Get());
-    brush_->SetColor(kColBorder);
-    rt_->DrawRoundedRectangle(D2D1::RoundedRect(fineCard, 10.0f, 10.0f), brush_.Get(), 1.0f);
-
-    float ry = y;
-
-    DrawTextLine(L"Frame rate", fmtBodySemi_.Get(),
-        D2D1::RectF(contentX + 16.0f, ry + 7.0f, contentX + 260.0f, ry + 25.0f), kColText);
-    DrawTextLine(L"Capture and NVENC cadence", fmtSmall_.Get(),
-        D2D1::RectF(contentX + 16.0f, ry + 25.0f, contentX + 280.0f, ry + 42.0f), kColTextMuted);
-
-    D2D1_RECT_F segTrack = D2D1::RectF(contentX + contentW - 180.0f, ry + 9.0f, contentX + contentW - 16.0f, ry + 39.0f);
-    brush_->SetColor(kColWell);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(segTrack, 7.0f, 7.0f), brush_.Get());
-    brush_->SetColor(kColBorder);
-    rt_->DrawRoundedRectangle(D2D1::RoundedRect(segTrack, 7.0f, 7.0f), brush_.Get(), 1.0f);
-
-    const uint32_t fpsOpts[2] = { 30, 60 };
-    const wchar_t* fpsLabels[2] = { L"30 fps", L"60 fps" };
-    float segW = ((segTrack.right - segTrack.left) - 6.0f) * 0.5f;
-    for (int i = 0; i < 2; ++i) {
-        D2D1_RECT_F sr = D2D1::RectF(
-            segTrack.left + 3.0f + static_cast<float>(i) * segW,
-            segTrack.top + 3.0f,
-            segTrack.left + 3.0f + static_cast<float>(i + 1) * segW,
-            segTrack.bottom - 3.0f);
-        HitKey key{ HitAction::SelectFps, static_cast<int>(fpsOpts[i]) };
-        bool sel = (editedCfg_.fps == fpsOpts[i]);
-        bool hov = (hoveredHit_ == key);
-        if (sel) {
-            brush_->SetColor(kColAccent);
-            rt_->FillRoundedRectangle(D2D1::RoundedRect(sr, 5.0f, 5.0f), brush_.Get());
-        } else if (hov) {
-            brush_->SetColor(kColWellHover);
-            rt_->FillRoundedRectangle(D2D1::RoundedRect(sr, 5.0f, 5.0f), brush_.Get());
+        float uw = (unitR.right - unitR.left - 6.0f) * 0.5f;
+        const wchar_t* uLabels[2] = { L"sec", L"min" };
+        for (int ui = 0; ui < 2; ++ui) {
+            D2D1_RECT_F ur = D2D1::RectF(
+                unitR.left + 3.0f + static_cast<float>(ui) * uw, unitR.top + 3.0f,
+                unitR.left + 3.0f + static_cast<float>(ui + 1) * uw, unitR.bottom - 3.0f);
+            HitKey uk{ HitAction::ToggleReplayUnit, ui };
+            bool active = ((ui == 1) == replayUnitMinutes_);
+            if (active || hoveredHit_ == uk) {
+                brush_->SetColor(active ? C(0xFFFFFF, 0.14f) : C(0xFFFFFF, 0.06f));
+                rt_->FillRoundedRectangle(D2D1::RoundedRect(ur, 4.0f, 4.0f), brush_.Get());
+            }
+            DrawTextLine(uLabels[ui], fmtSmall_.Get(), ur, active ? kColText : kColTextMuted,
+                DWRITE_TEXT_ALIGNMENT_CENTER);
+            hitTargets_.push_back({ ur, uk, true });
         }
-        DrawTextLine(fpsLabels[i], fmtSmall_.Get(), sr,
-            sel ? C(0xFFFFFF) : kColTextSec, DWRITE_TEXT_ALIGNMENT_CENTER);
-        hitTargets_.push_back({ sr, key, true });
     }
+    y += rowH + gap;
 
-    ry += r1H;
-    brush_->SetColor(kColDivider);
-    rt_->DrawLine(D2D1::Point2F(contentX, ry), D2D1::Point2F(contentX + contentW, ry), brush_.Get(), 1.0f);
+    drawRowHeader(y, rowH, L"\uE9E9", L"Video bitrate");
+    {
+        float trLeft = rightEdge - 332.0f;
+        float trRight = rightEdge - 108.0f;
+        float trCy = y + rowH * 0.5f;
+        sliderTrackRect_ = D2D1::RectF(trLeft, trCy - 14.0f, trRight, trCy + 14.0f);
 
-    DrawTextLine(L"Replay length", fmtBodySemi_.Get(),
-        D2D1::RectF(contentX + 16.0f, ry + 8.0f, contentX + 240.0f, ry + 26.0f), kColText);
-    wchar_t curSecBuf[48] = {};
-    std::swprintf(curSecBuf, sizeof(curSecBuf) / sizeof(wchar_t), L"Active window: %us", editedCfg_.replaySeconds);
-    DrawTextLine(curSecBuf, fmtSmall_.Get(),
-        D2D1::RectF(contentX + 16.0f, ry + 26.0f, contentX + 240.0f, ry + 43.0f), kColTextMuted);
-
-    float pillW = 46.0f;
-    float pillGap = 6.0f;
-    size_t pillCount = std::size(kDurationPresets);
-    float pillsStartX = contentX + contentW - 16.0f - (static_cast<float>(pillCount) * pillW + static_cast<float>(pillCount - 1) * pillGap);
-    for (size_t i = 0; i < pillCount; ++i) {
-        uint32_t sec = kDurationPresets[i];
-        float px = pillsStartX + static_cast<float>(i) * (pillW + pillGap);
-        D2D1_RECT_F pr = D2D1::RectF(px, ry + 11.0f, px + pillW, ry + 39.0f);
-        HitKey key{ HitAction::SelectSeconds, static_cast<int>(sec) };
-        bool sel = (editedCfg_.replaySeconds == sec);
-        bool hov = (hoveredHit_ == key);
-        brush_->SetColor(sel ? kColAccentTint : (hov ? kColWellHover : kColWell));
-        rt_->FillRoundedRectangle(D2D1::RoundedRect(pr, 6.0f, 6.0f), brush_.Get());
-        brush_->SetColor(sel ? kColAccentBorder : (hov ? kColBorderHover : kColBorder));
-        rt_->DrawRoundedRectangle(D2D1::RoundedRect(pr, 6.0f, 6.0f), brush_.Get(), 1.0f);
-
-        wchar_t lbl[16] = {};
-        std::swprintf(lbl, sizeof(lbl) / sizeof(wchar_t), L"%us", sec);
-        DrawTextLine(lbl, fmtSmall_.Get(), pr,
-            sel ? C(0xC7D2FE) : kColTextSec, DWRITE_TEXT_ALIGNMENT_CENTER);
-        hitTargets_.push_back({ pr, key, true });
-    }
-
-    ry += r2H;
-    brush_->SetColor(kColDivider);
-    rt_->DrawLine(D2D1::Point2F(contentX, ry), D2D1::Point2F(contentX + contentW, ry), brush_.Get(), 1.0f);
-
-    DrawTextLine(L"Video bitrate", fmtBodySemi_.Get(),
-        D2D1::RectF(contentX + 16.0f, ry + 10.0f, contentX + 240.0f, ry + 28.0f), kColText);
-    DrawTextLine(L"NVENC low-latency VBR target", fmtSmall_.Get(),
-        D2D1::RectF(contentX + 16.0f, ry + 29.0f, contentX + 240.0f, ry + 47.0f), kColTextMuted);
-
-    wchar_t mbpsTxt[32] = {};
-    std::swprintf(mbpsTxt, sizeof(mbpsTxt) / sizeof(wchar_t), L"%u Mbps", editedCfg_.bitrateMbps);
-    D2D1_RECT_F mbpsPill = D2D1::RectF(contentX + 266.0f, ry + 17.0f, contentX + 340.0f, ry + 41.0f);
-    brush_->SetColor(kColWell);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(mbpsPill, 6.0f, 6.0f), brush_.Get());
-    brush_->SetColor(kColBorder);
-    rt_->DrawRoundedRectangle(D2D1::RoundedRect(mbpsPill, 6.0f, 6.0f), brush_.Get(), 1.0f);
-    DrawTextLine(mbpsTxt, fmtMono_.Get(), mbpsPill, C(0xA5B4FC),
-        DWRITE_TEXT_ALIGNMENT_CENTER);
-
-    float trLeft = contentX + 358.0f;
-    float trRight = contentX + contentW - 18.0f;
-    float trCy = ry + 23.0f;
-    sliderTrackRect_ = D2D1::RectF(trLeft, trCy - 14.0f, trRight, trCy + 14.0f);
-
-    D2D1_RECT_F rail = D2D1::RectF(trLeft, trCy - 3.0f, trRight, trCy + 3.0f);
-    brush_->SetColor(kColWell);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(rail, 3.0f, 3.0f), brush_.Get());
-    brush_->SetColor(kColBorder);
-    rt_->DrawRoundedRectangle(D2D1::RoundedRect(rail, 3.0f, 3.0f), brush_.Get(), 1.0f);
-
-    float t = ClampF((static_cast<float>(editedCfg_.bitrateMbps) - 5.0f) / 75.0f, 0.0f, 1.0f);
-    float knobX = trLeft + t * (trRight - trLeft);
-    if (knobX > trLeft + 3.0f) {
-        brush_->SetColor(kColAccent);
-        rt_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(trLeft, trCy - 3.0f, knobX, trCy + 3.0f), 3.0f, 3.0f),
+        brush_->SetColor(C(0xFFFFFF, 0.14f));
+        rt_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(trLeft, trCy - 2.0f, trRight, trCy + 2.0f), 2.0f, 2.0f),
             brush_.Get());
+
+        float t = ClampF((static_cast<float>(editedCfg_.bitrateMbps) - 5.0f) / 75.0f, 0.0f, 1.0f);
+        float knobX = trLeft + t * (trRight - trLeft);
+        if (knobX > trLeft + 2.0f) {
+            brush_->SetColor(kColAccent);
+            rt_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(trLeft, trCy - 2.0f, knobX, trCy + 2.0f), 2.0f, 2.0f),
+                brush_.Get());
+        }
+
+        bool sliderActive = draggingSlider_ || (hoveredHit_.action == HitAction::BitrateSlider);
+        brush_->SetColor(C(0x3A3B40));
+        rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(knobX, trCy), sliderActive ? 9.0f : 8.0f, sliderActive ? 9.0f : 8.0f), brush_.Get());
+        brush_->SetColor(kColAccent);
+        rt_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(knobX, trCy), sliderActive ? 7.5f : 6.5f, sliderActive ? 7.5f : 6.5f), brush_.Get(), 3.2f);
+        hitTargets_.push_back({ sliderTrackRect_, HitKey{ HitAction::BitrateSlider, 0 }, true });
+
+        DrawEditBox(D2D1::RectF(rightEdge - 94.0f, y + 12.0f, rightEdge - 42.0f, y + 44.0f),
+            std::to_wstring(editedCfg_.bitrateMbps), InputMode::EditBitrate, HitKey{ HitAction::EditBitrateBox, 0 });
+        DrawTextLine(L"Mbps", fmtSmall_.Get(), D2D1::RectF(rightEdge - 36.0f, y, rightEdge + 4.0f, y + rowH), kColTextMuted);
     }
+    y += rowH + gap;
 
-    bool sliderActive = draggingSlider_ || (hoveredHit_.action == HitAction::BitrateSlider);
-    if (sliderActive) {
-        brush_->SetColor(C(0x5E6AD2, 0.28f));
-        rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(knobX, trCy), 12.0f, 12.0f), brush_.Get());
+    drawRowHeader(y, rowH, L"\uE767", L"Audio & alerts");
+    {
+        struct ToggleItem {
+            const wchar_t* label;
+            bool checked;
+            HitAction action;
+            float labelW;
+        };
+        const ToggleItem items[3] = {
+            { L"Desktop", editedCfg_.recordDesktopAudio, HitAction::ToggleDesktopAudio, 54.0f },
+            { L"Mic", editedCfg_.recordMicAudio, HitAction::ToggleMicAudio, 28.0f },
+            { L"Chime", editedCfg_.saveChime, HitAction::ToggleChime, 42.0f },
+        };
+        float xPos = rightEdge;
+        for (int i = 2; i >= 0; --i) {
+            D2D1_RECT_F togR = D2D1::RectF(xPos - 40.0f, y + 18.0f, xPos, y + 38.0f);
+            HitKey tk{ items[i].action, 0 };
+            bool hov = (hoveredHit_ == tk);
+            DrawToggleSwitch(togR, items[i].checked, hov);
+            D2D1_RECT_F lblR = D2D1::RectF(togR.left - items[i].labelW - 8.0f, y, togR.left - 8.0f, y + rowH);
+            DrawTextLine(items[i].label, fmtBody_.Get(), lblR, kColTextSec, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            hitTargets_.push_back({ D2D1::RectF(lblR.left, y + 8.0f, togR.right, y + rowH - 8.0f), tk, true });
+            xPos = lblR.left - 24.0f;
+        }
     }
-    brush_->SetColor(C(0xFFFFFF));
-    rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(knobX, trCy), 7.5f, 7.5f), brush_.Get());
-    brush_->SetColor(kColAccent);
-    rt_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(knobX, trCy), 7.5f, 7.5f), brush_.Get(), 2.0f);
+    y += rowH + gap;
 
-    DrawTextLine(L"5 Mbps", fmtMicro_.Get(), D2D1::RectF(trLeft, ry + 38.0f, trLeft + 56.0f, ry + 54.0f), kColTextMuted);
-    DrawTextLine(L"80 Mbps", fmtMicro_.Get(), D2D1::RectF(trRight - 64.0f, ry + 38.0f, trRight, ry + 54.0f),
-        kColTextMuted, DWRITE_TEXT_ALIGNMENT_TRAILING);
+    float row6H = 66.0f;
+    DrawFluentSurface(D2D1::RectF(contentX, y, contentX + contentW, y + row6H), 6.0f, false, false);
+    DrawGlyph(L"\uE765", 17.0f, D2D1::RectF(contentX + 16.0f, y, contentX + 38.0f, y + row6H), C(0xE4E4E7));
+    DrawTextLine(L"Save hotkey & clips folder", fmtRowTitle_.Get(),
+        D2D1::RectF(contentX + 50.0f, y + 12.0f, contentX + 430.0f, y + 32.0f), kColText);
 
-    hitTargets_.push_back({ sliderTrackRect_, HitKey{ HitAction::BitrateSlider, 0 }, true });
+    std::wstring dirPath = editedCfg_.outputDir.empty() ? ExpandEnvPath(editedCfg_.outputDirRaw) : editedCfg_.outputDir;
+    DrawTextLine(dirPath, fmtMono_.Get(),
+        D2D1::RectF(contentX + 50.0f, y + 34.0f, contentX + 430.0f, y + 52.0f), kColTextMuted);
 
-    ry += r3H;
-    brush_->SetColor(kColDivider);
-    rt_->DrawLine(D2D1::Point2F(contentX, ry), D2D1::Point2F(contentX + contentW, ry), brush_.Get(), 1.0f);
+    D2D1_RECT_F openR = D2D1::RectF(rightEdge - 52.0f, y + 18.0f, rightEdge, y + 48.0f);
+    D2D1_RECT_F browseR = D2D1::RectF(openR.left - 70.0f, y + 18.0f, openR.left - 6.0f, y + 48.0f);
+    D2D1_RECT_F resetHkR = D2D1::RectF(browseR.left - 60.0f, y + 18.0f, browseR.left - 6.0f, y + 48.0f);
+    D2D1_RECT_F changeR = D2D1::RectF(resetHkR.left - 70.0f, y + 18.0f, resetHkR.left - 6.0f, y + 48.0f);
 
-    double estMb = 0.0;
-    float ratio = 0.0f;
-    bool overCap = false;
-    ComputeRamEstimate(estMb, ratio, overCap);
-
-    DrawTextLine(L"Ring RAM budget", fmtBodySemi_.Get(),
-        D2D1::RectF(contentX + 16.0f, ry + 7.0f, contentX + 260.0f, ry + 25.0f), kColText);
-    wchar_t ramDesc[96] = {};
-    if (overCap) {
-        std::swprintf(ramDesc, sizeof(ramDesc) / sizeof(wchar_t),
-            L"~%.0f MB estimated · will clamp replay window to fit 2 GB cap", estMb);
+    if (inputMode_ == InputMode::CaptureHotkey) {
+        D2D1_RECT_F listenR = D2D1::RectF(changeR.left - 186.0f, y + 18.0f, changeR.left - 8.0f, y + 48.0f);
+        brush_->SetColor(C(0xFFFFFF, 0.08f));
+        rt_->FillRoundedRectangle(D2D1::RoundedRect(listenR, 5.0f, 5.0f), brush_.Get());
+        brush_->SetColor(kColAccent);
+        rt_->DrawRoundedRectangle(D2D1::RoundedRect(listenR, 5.0f, 5.0f), brush_.Get(), 1.2f);
+        DrawTextLine(L"Press shortcut... [Esc]", fmtSmall_.Get(), listenR, kColText, DWRITE_TEXT_ALIGNMENT_CENTER);
     } else {
-        std::swprintf(ramDesc, sizeof(ramDesc) / sizeof(wchar_t),
-            L"~%.0f MB allocated in RAM · 0 B disk writes while idle", estMb);
+        DrawKeycapGroupRight(changeR.left - 10.0f, y + row6H * 0.5f, editedCfg_.hotkeySave.display, contentX + 260.0f);
     }
-    DrawTextLine(ramDesc, fmtSmall_.Get(),
-        D2D1::RectF(contentX + 16.0f, ry + 26.0f, contentX + 410.0f, ry + 43.0f),
-        overCap ? kColAmber : kColTextMuted);
 
-    D2D1_RECT_F barBg = D2D1::RectF(contentX + 434.0f, ry + 20.0f, contentX + contentW - 18.0f, ry + 30.0f);
-    brush_->SetColor(kColWell);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(barBg, 5.0f, 5.0f), brush_.Get());
-    float fillW = std::max(8.0f, (barBg.right - barBg.left) * ratio);
-    brush_->SetColor(overCap ? kColAmber : kColAccent);
-    rt_->FillRoundedRectangle(
-        D2D1::RoundedRect(D2D1::RectF(barBg.left, barBg.top, std::min(barBg.right, barBg.left + fillW), barBg.bottom), 5.0f, 5.0f),
-        brush_.Get());
+    DrawFluentButton(changeR, inputMode_ == InputMode::CaptureHotkey ? L"Cancel" : L"Change", nullptr,
+        HitKey{ HitAction::HotkeyCaptureBtn, 0 }, false, false, true);
+    DrawFluentButton(resetHkR, L"Reset", nullptr, HitKey{ HitAction::HotkeyResetBtn, 0 }, false, false, true);
+    DrawFluentButton(browseR, L"Browse", nullptr, HitKey{ HitAction::BrowseFolder, 0 }, false, false, true);
+    DrawFluentButton(openR, L"Open", nullptr, HitKey{ HitAction::OpenFolderBtn, 0 }, false, false, true);
 
-    y = ry + r4H + 16.0f;
+    y += row6H + 14.0f;
     yCursor += (y - (yCursor - scrollY_));
 }
 
-void SettingsWindow::DrawAudioTab(float contentX, float contentW, float& yCursor) {
-    float y = yCursor + 18.0f - scrollY_;
-
-    struct AudioRowDef {
-        ui::IconId icon;
-        const wchar_t* title;
-        const wchar_t* desc;
-        HitAction action;
-        bool checked;
-        bool hasLive;
-        bool liveActive;
-        const wchar_t* liveLabel;
-    };
-
-    const AudioRowDef rows[] = {
-        {
-            ui::IconId::SpeakerOn,
-            L"Desktop Audio",
-            L"Capture WASAPI system loopback across games and apps",
-            HitAction::ToggleDesktopAudio,
-            editedCfg_.recordDesktopAudio,
-            true,
-            status_.audio.desktopActive,
-            status_.audio.desktopActive ? L"Streaming" : L"Muted"
-        },
-        {
-            ui::IconId::MicOn,
-            L"Microphone",
-            L"Mix default communications microphone into AAC replay audio",
-            HitAction::ToggleMicAudio,
-            editedCfg_.recordMicAudio,
-            true,
-            status_.audio.micActive,
-            status_.audio.micActive ? L"Streaming" : L"Inactive"
-        },
-        {
-            ui::IconId::BellChime,
-            L"Save Confirmation Chime",
-            L"Play an audible chime when a replay finishes writing to disk",
-            HitAction::ToggleChime,
-            editedCfg_.saveChime,
-            false,
-            false,
-            L""
-        },
-    };
-
-    for (const auto& r : rows) {
-        D2D1_RECT_F card = D2D1::RectF(contentX, y, contentX + contentW, y + 80.0f);
-        HitKey key{ r.action, 0 };
-        bool hovered = (hoveredHit_ == key);
-
-        brush_->SetColor(hovered ? kColCardHover : kColCard);
-        rt_->FillRoundedRectangle(D2D1::RoundedRect(card, 10.0f, 10.0f), brush_.Get());
-        brush_->SetColor(hovered ? kColBorderHover : kColBorder);
-        rt_->DrawRoundedRectangle(D2D1::RoundedRect(card, 10.0f, 10.0f), brush_.Get(), 1.0f);
-
-        D2D1_RECT_F well = D2D1::RectF(contentX + 18.0f, y + 18.0f, contentX + 62.0f, y + 62.0f);
-        brush_->SetColor(r.checked ? kColAccentTint : kColWell);
-        rt_->FillRoundedRectangle(D2D1::RoundedRect(well, 9.0f, 9.0f), brush_.Get());
-        brush_->SetColor(r.checked ? C(0xA5B4FC) : kColTextMuted);
-        ui::DrawVectorIcon(rt_.Get(), d2dFactory_.Get(), brush_.Get(), roundStroke_.Get(), r.icon,
-            D2D1::RectF(contentX + 29.0f, y + 29.0f, contentX + 51.0f, y + 51.0f), 1.7f);
-
-        DrawTextLine(r.title, fmtBodySemi_.Get(),
-            D2D1::RectF(contentX + 78.0f, y + 19.0f, contentX + contentW - 180.0f, y + 39.0f), kColText);
-        DrawTextLine(r.desc, fmtSmall_.Get(),
-            D2D1::RectF(contentX + 78.0f, y + 41.0f, contentX + contentW - 168.0f, y + 61.0f), kColTextMuted);
-
-        if (r.hasLive) {
-            D2D1_RECT_F pill = D2D1::RectF(contentX + contentW - 160.0f, y + 29.0f, contentX + contentW - 84.0f, y + 51.0f);
-            brush_->SetColor(r.liveActive ? kColGreenTint : kColWell);
-            rt_->FillRoundedRectangle(D2D1::RoundedRect(pill, 11.0f, 11.0f), brush_.Get());
-            DrawTextLine(r.liveLabel, fmtMicro_.Get(), pill,
-                r.liveActive ? kColGreen : kColTextMuted, DWRITE_TEXT_ALIGNMENT_CENTER);
-        }
-
-        D2D1_RECT_F tog = D2D1::RectF(contentX + contentW - 64.0f, y + 28.0f, contentX + contentW - 20.0f, y + 52.0f);
-        DrawToggleSwitch(tog, r.checked, hovered);
-        hitTargets_.push_back({ card, key, true });
-
-        y += 92.0f;
-    }
-
-    y += 10.0f;
-    DrawTextLine(L"Live Audio Pipeline", fmtSection_.Get(),
-        D2D1::RectF(contentX, y, contentX + contentW, y + 20.0f), kColTextSec);
-    y += 28.0f;
-
-    D2D1_RECT_F statCard = D2D1::RectF(contentX, y, contentX + contentW, y + 84.0f);
-    brush_->SetColor(kColCard);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(statCard, 10.0f, 10.0f), brush_.Get());
-    brush_->SetColor(kColBorder);
-    rt_->DrawRoundedRectangle(D2D1::RoundedRect(statCard, 10.0f, 10.0f), brush_.Get(), 1.0f);
-
-    struct StatCol {
-        const wchar_t* label;
-        uint64_t val;
-    };
-    const StatCol cols[4] = {
-        { L"AAC FRAMES", status_.audio.aacFramesEncoded },
-        { L"DESKTOP PACKETS", status_.audio.desktopPackets },
-        { L"MIC PACKETS", status_.audio.micPackets },
-        { L"DEVICE REOPENS", status_.audio.deviceReopens },
-    };
-
-    float colW = contentW / 4.0f;
-    for (int i = 0; i < 4; ++i) {
-        float cx = contentX + static_cast<float>(i) * colW;
-        if (i > 0) {
-            brush_->SetColor(kColDivider);
-            rt_->DrawLine(D2D1::Point2F(cx, y + 16.0f), D2D1::Point2F(cx, y + 68.0f), brush_.Get(), 1.0f);
-        }
-        std::wstring numStr = FormatIntegerComma(cols[i].val);
-        DrawTextLine(cols[i].label, fmtMicro_.Get(),
-            D2D1::RectF(cx + 16.0f, y + 18.0f, cx + colW - 12.0f, y + 34.0f), kColTextMuted);
-        DrawTextLine(numStr, fmtPageTitle_.Get(),
-            D2D1::RectF(cx + 16.0f, y + 38.0f, cx + colW - 12.0f, y + 66.0f), kColText);
-    }
-
-    yCursor += (y + 102.0f - (yCursor - scrollY_));
-}
-
-void SettingsWindow::DrawHotkeysTab(float contentX, float contentW, float& yCursor) {
-    float y = yCursor + 18.0f - scrollY_;
-
-    D2D1_RECT_F hkCard = D2D1::RectF(contentX, y, contentX + contentW, y + 132.0f);
-    brush_->SetColor(kColCard);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(hkCard, 10.0f, 10.0f), brush_.Get());
-    brush_->SetColor(recordingHotkey_ ? kColAccent : kColBorder);
-    rt_->DrawRoundedRectangle(D2D1::RoundedRect(hkCard, 10.0f, 10.0f), brush_.Get(), recordingHotkey_ ? 1.5f : 1.0f);
-
-    D2D1_RECT_F hkWell = D2D1::RectF(contentX + 18.0f, y + 18.0f, contentX + 58.0f, y + 58.0f);
-    brush_->SetColor(kColAccentTint);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(hkWell, 9.0f, 9.0f), brush_.Get());
-    brush_->SetColor(C(0xA5B4FC));
-    ui::DrawVectorIcon(rt_.Get(), d2dFactory_.Get(), brush_.Get(), roundStroke_.Get(),
-        ui::IconId::KeyboardKeys, D2D1::RectF(contentX + 27.0f, y + 27.0f, contentX + 49.0f, y + 49.0f), 1.65f);
-
-    DrawTextLine(L"Save Replay Hotkey", fmtBodySemi_.Get(),
-        D2D1::RectF(contentX + 72.0f, y + 18.0f, contentX + contentW - 20.0f, y + 38.0f), kColText);
-    DrawTextLine(L"Global trigger captured without injecting overlays into games", fmtSmall_.Get(),
-        D2D1::RectF(contentX + 72.0f, y + 38.0f, contentX + contentW - 20.0f, y + 56.0f), kColTextMuted);
-
-    D2D1_RECT_F bindBox = D2D1::RectF(contentX + 18.0f, y + 72.0f, contentX + contentW - 196.0f, y + 114.0f);
-    HitKey capKey{ HitAction::HotkeyCaptureBtn, 0 };
-    bool capHover = (hoveredHit_ == capKey);
-    brush_->SetColor(recordingHotkey_ ? kColAccentTint : (capHover ? kColWellHover : kColWell));
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(bindBox, 8.0f, 8.0f), brush_.Get());
-    brush_->SetColor(recordingHotkey_ ? kColAccent : (capHover ? kColBorderHover : kColBorder));
-    rt_->DrawRoundedRectangle(D2D1::RoundedRect(bindBox, 8.0f, 8.0f), brush_.Get(), recordingHotkey_ ? 1.5f : 1.0f);
-
-    if (recordingHotkey_) {
-        DrawTextLine(L"Listening... press your key combination", fmtBodySemi_.Get(),
-            D2D1::RectF(bindBox.left + 14.0f, bindBox.top, bindBox.right - 70.0f, bindBox.bottom),
-            C(0xC7D2FE));
-        DrawKeycapGroup(bindBox.right - 58.0f, (bindBox.top + bindBox.bottom) * 0.5f, "Esc", true, bindBox.right - 8.0f);
-    } else {
-        DrawKeycapGroup(bindBox.left + 14.0f, (bindBox.top + bindBox.bottom) * 0.5f,
-            editedCfg_.hotkeySave.display, true, bindBox.right - 14.0f);
-    }
-    hitTargets_.push_back({ bindBox, capKey, true });
-
-    DrawPillButton(D2D1::RectF(contentX + contentW - 186.0f, y + 75.0f, contentX + contentW - 102.0f, y + 111.0f),
-        recordingHotkey_ ? L"Cancel" : L"Change", nullptr, HitKey{ HitAction::HotkeyCaptureBtn, 0 }, false);
-    hitTargets_.back().inViewport = true;
-
-    ui::IconId rstIco = ui::IconId::RefreshArrows;
-    DrawPillButton(D2D1::RectF(contentX + contentW - 94.0f, y + 75.0f, contentX + contentW - 18.0f, y + 111.0f),
-        L"Reset", &rstIco, HitKey{ HitAction::HotkeyResetBtn, 0 }, false);
-    hitTargets_.back().inViewport = true;
-
-    y += 148.0f;
-
-    D2D1_RECT_F dirCard = D2D1::RectF(contentX, y, contentX + contentW, y + 132.0f);
-    brush_->SetColor(kColCard);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(dirCard, 10.0f, 10.0f), brush_.Get());
-    brush_->SetColor(kColBorder);
-    rt_->DrawRoundedRectangle(D2D1::RoundedRect(dirCard, 10.0f, 10.0f), brush_.Get(), 1.0f);
-
-    D2D1_RECT_F dirWell = D2D1::RectF(contentX + 18.0f, y + 18.0f, contentX + 58.0f, y + 58.0f);
-    brush_->SetColor(kColWell);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(dirWell, 9.0f, 9.0f), brush_.Get());
-    brush_->SetColor(kColTextSec);
-    ui::DrawVectorIcon(rt_.Get(), d2dFactory_.Get(), brush_.Get(), roundStroke_.Get(),
-        ui::IconId::FolderOpen, D2D1::RectF(contentX + 27.0f, y + 27.0f, contentX + 49.0f, y + 49.0f), 1.65f);
-
-    DrawTextLine(L"Clips Storage Folder", fmtBodySemi_.Get(),
-        D2D1::RectF(contentX + 72.0f, y + 18.0f, contentX + contentW - 20.0f, y + 38.0f), kColText);
-    DrawTextLine(L"Fast-start MP4 replays are written atomically here when saved", fmtSmall_.Get(),
-        D2D1::RectF(contentX + 72.0f, y + 38.0f, contentX + contentW - 20.0f, y + 56.0f), kColTextMuted);
-
-    D2D1_RECT_F pathBox = D2D1::RectF(contentX + 18.0f, y + 75.0f, contentX + contentW - 224.0f, y + 111.0f);
-    brush_->SetColor(kColWell);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(pathBox, 7.0f, 7.0f), brush_.Get());
-    brush_->SetColor(kColBorder);
-    rt_->DrawRoundedRectangle(D2D1::RoundedRect(pathBox, 7.0f, 7.0f), brush_.Get(), 1.0f);
-
-    std::wstring displayPath = editedCfg_.outputDir.empty() ? ExpandEnvPath(editedCfg_.outputDirRaw) : editedCfg_.outputDir;
-    DrawTextLine(displayPath, fmtMono_.Get(),
-        D2D1::RectF(pathBox.left + 12.0f, pathBox.top, pathBox.right - 12.0f, pathBox.bottom), kColText);
-
-    ui::IconId brIco = ui::IconId::FolderOpen;
-    DrawPillButton(D2D1::RectF(contentX + contentW - 214.0f, y + 75.0f, contentX + contentW - 110.0f, y + 111.0f),
-        L"Browse", &brIco, HitKey{ HitAction::BrowseFolder, 0 }, false);
-    hitTargets_.back().inViewport = true;
-
-    ui::IconId extIco = ui::IconId::ExternalArrow;
-    DrawPillButton(D2D1::RectF(contentX + contentW - 102.0f, y + 75.0f, contentX + contentW - 18.0f, y + 111.0f),
-        L"Open", &extIco, HitKey{ HitAction::OpenFolderBtn, 0 }, false);
-    hitTargets_.back().inViewport = true;
-
-    y += 148.0f;
-
-    D2D1_RECT_F tipCard = D2D1::RectF(contentX, y, contentX + contentW, y + 84.0f);
-    brush_->SetColor(kColCard);
-    rt_->FillRoundedRectangle(D2D1::RoundedRect(tipCard, 10.0f, 10.0f), brush_.Get());
-    brush_->SetColor(kColBorder);
-    rt_->DrawRoundedRectangle(D2D1::RoundedRect(tipCard, 10.0f, 10.0f), brush_.Get(), 1.0f);
-
-    DrawTextLine(L"Shortcut & Background Notes", fmtBodySemi_.Get(),
-        D2D1::RectF(contentX + 18.0f, y + 14.0f, contentX + contentW - 18.0f, y + 34.0f), kColTextSec);
-    DrawTextLine(L"Use Ctrl, Alt, or Shift with letters/numbers, or standalone F1-F24/Numpad keys. Closing Clipper keeps it active in the system tray.",
-        fmtSmallWrap_.Get(),
-        D2D1::RectF(contentX + 18.0f, y + 38.0f, contentX + contentW - 18.0f, y + 76.0f), kColTextMuted,
-        DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-
-    yCursor += (y + 100.0f - (yCursor - scrollY_));
-}
-
 void SettingsWindow::DrawBottomBar() {
-    D2D1_RECT_F bar = D2D1::RectF(kSidebarW, kViewBottom, kWndW, kWndH);
-    brush_->SetColor(kColHeaderBg);
-    rt_->FillRectangle(bar, brush_.Get());
-
-    brush_->SetColor(kColDivider);
-    rt_->DrawLine(D2D1::Point2F(kSidebarW, kViewBottom), D2D1::Point2F(kWndW, kViewBottom), brush_.Get(), 1.0f);
-
     bool dirty = IsDirty();
-    float msgLeft = kSidebarW + kContentPadL;
-    float msgRight = dirty ? 690.0f : 790.0f;
 
     if (!feedbackText_.empty()) {
         D2D1_COLOR_F fbCol = feedbackIsError_ ? kColRed : kColGreen;
         brush_->SetColor(fbCol);
-        rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(msgLeft + 5.0f, kViewBottom + 31.0f), 4.0f, 4.0f), brush_.Get());
-        DrawTextLine(feedbackText_, fmtBodySemi_.Get(),
-            D2D1::RectF(msgLeft + 16.0f, kViewBottom, msgRight, kWndH), fbCol);
-    } else if (dirty) {
-        brush_->SetColor(kColAmber);
-        rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(msgLeft + 5.0f, kViewBottom + 31.0f), 4.0f, 4.0f), brush_.Get());
-        DrawTextLine(L"Unsaved configuration changes", fmtBodySemi_.Get(),
-            D2D1::RectF(msgLeft + 16.0f, kViewBottom, msgRight, kWndH), kColAmber);
+        rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(kContentX + 5.0f, kViewBottom + 28.0f), 3.5f, 3.5f), brush_.Get());
+        DrawTextLine(feedbackText_, fmtBody_.Get(),
+            D2D1::RectF(kContentX + 16.0f, kViewBottom, 760.0f, kWndH), fbCol);
+    } else if (activeTab_ == SettingsTab::Settings || dirty) {
+        double estMb = 0.0;
+        bool overCap = false;
+        uint32_t clampedSecs = 0;
+        ComputeRamEstimate(estMb, overCap, clampedSecs);
+
+        std::wstring ramStr = FormatRamHuman(estMb);
+        std::wstring line = L"Estimated ring buffer: " + ramStr + L" in RAM";
+        if (overCap) {
+            line = L"Ring buffer exceeds 8 GB cap (clamps replay to " + FormatReplayLengthShort(clampedSecs) + L" on apply)";
+        }
+        DrawTextLine(line, fmtBody_.Get(),
+            D2D1::RectF(kContentX, kViewBottom, 760.0f, kWndH),
+            overCap ? kColAmber : kColTextMuted);
     } else {
-        DrawTextLine(L"Closing this window keeps Clipper recording quietly in the system tray.",
-            fmtSmall_.Get(), D2D1::RectF(msgLeft, kViewBottom, msgRight, kWndH), kColTextMuted);
+        std::wstring line = L"Hotkey: " + Utf8ToWide(appliedCfg_.hotkeySave.display) + L"  ·  " +
+            (appliedCfg_.outputDir.empty() ? ExpandEnvPath(appliedCfg_.outputDirRaw) : appliedCfg_.outputDir);
+        DrawTextLine(line, fmtSmall_.Get(), D2D1::RectF(kContentX, kViewBottom, 940.0f, kWndH), kColTextMuted);
     }
 
-    if (dirty) {
-        DrawPillButton(D2D1::RectF(706.0f, kViewBottom + 14.0f, 788.0f, kWndH - 14.0f),
-            L"Reset", nullptr, HitKey{ HitAction::DiscardChanges, 0 }, false);
-        DrawPillButton(D2D1::RectF(798.0f, kViewBottom + 14.0f, 932.0f, kWndH - 14.0f),
-            L"Apply Changes", nullptr, HitKey{ HitAction::ApplyChanges, 0 }, true);
-    } else {
-        D2D1_RECT_F donePill = D2D1::RectF(828.0f, kViewBottom + 14.0f, 932.0f, kWndH - 14.0f);
-        brush_->SetColor(kColWell);
-        rt_->FillRoundedRectangle(D2D1::RoundedRect(donePill, 7.0f, 7.0f), brush_.Get());
-        brush_->SetColor(kColBorder);
-        rt_->DrawRoundedRectangle(D2D1::RoundedRect(donePill, 7.0f, 7.0f), brush_.Get(), 1.0f);
-        DrawTextLine(L"Up to date", fmtSmall_.Get(), donePill, kColTextMuted,
-            DWRITE_TEXT_ALIGNMENT_CENTER);
+    if (activeTab_ == SettingsTab::Settings || dirty) {
+        if (dirty) {
+            DrawFluentButton(D2D1::RectF(774.0f, kViewBottom + 12.0f, 848.0f, kWndH - 14.0f),
+                L"Reset", nullptr, HitKey{ HitAction::DiscardChanges, 0 }, false);
+        }
+        DrawFluentButton(D2D1::RectF(856.0f, kViewBottom + 12.0f, kWndW - kContentPadR, kWndH - 14.0f),
+            L"Apply changes", nullptr, HitKey{ HitAction::ApplyChanges, 0 }, true, !dirty);
     }
 }
 
@@ -1646,7 +1476,7 @@ void SettingsWindow::RenderToDC(HDC targetHdc) {
             }
         }
         if (needAnyThumb) {
-            StepThumbnailBatch(4, false);
+            StepThumbnailBatch(6, false);
         }
     }
 
@@ -1656,29 +1486,19 @@ void SettingsWindow::RenderToDC(HDC targetHdc) {
     hitTargets_.clear();
 
     rt_->BeginDraw();
-    rt_->Clear(kColBg);
+    DrawMicaBackdrop();
+    DrawTitleBar();
+    DrawNavRail();
+    DrawPageHeader();
 
-    DrawSidebar(D2D1::RectF(0.0f, 0.0f, kSidebarW, kWndH));
-    DrawTopHeader();
-
-    D2D1_RECT_F viewRect = D2D1::RectF(kSidebarW + 1.0f, kViewTop + 1.0f, kWndW, kViewBottom - 1.0f);
+    D2D1_RECT_F viewRect = D2D1::RectF(kRailW, kViewTop, kWndW, kViewBottom);
     rt_->PushAxisAlignedClip(viewRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-    float contentX = kSidebarW + kContentPadL;
     float yCursor = kViewTop;
-    switch (activeTab_) {
-        case SettingsTab::Clips:
-            DrawClipsTab(contentX, kContentW, yCursor);
-            break;
-        case SettingsTab::Capture:
-            DrawCaptureTab(contentX, kContentW, yCursor);
-            break;
-        case SettingsTab::Audio:
-            DrawAudioTab(contentX, kContentW, yCursor);
-            break;
-        case SettingsTab::Hotkeys:
-            DrawHotkeysTab(contentX, kContentW, yCursor);
-            break;
+    if (activeTab_ == SettingsTab::Clips) {
+        DrawClipsTab(kContentX, kContentW, yCursor);
+    } else {
+        DrawSettingsTab(kContentX, kContentW, yCursor);
     }
 
     float totalHeight = yCursor - kViewTop;
@@ -1686,18 +1506,17 @@ void SettingsWindow::RenderToDC(HDC targetHdc) {
     scrollY_ = ClampF(scrollY_, 0.0f, maxScroll_);
 
     if (maxScroll_ > 1.0f) {
-        float trackTop = kViewTop + 10.0f;
-        float trackH = kViewH - 20.0f;
+        float trackTop = kViewTop + 8.0f;
+        float trackH = kViewH - 16.0f;
         float thumbH = std::max(36.0f, trackH * (kViewH / totalHeight));
         float thumbY = trackTop + (trackH - thumbH) * (scrollY_ / maxScroll_);
-        brush_->SetColor(kColBorder);
+        brush_->SetColor(C(0xFFFFFF, 0.18f));
         rt_->FillRoundedRectangle(
-            D2D1::RoundedRect(D2D1::RectF(948.0f, thumbY, 954.0f, thumbY + thumbH), 3.0f, 3.0f),
+            D2D1::RoundedRect(D2D1::RectF(kWndW - 10.0f, thumbY, kWndW - 5.0f, thumbY + thumbH), 2.5f, 2.5f),
             brush_.Get());
     }
 
     rt_->PopAxisAlignedClip();
-
     DrawBottomBar();
 
     HRESULT hr = rt_->EndDraw();
@@ -1712,14 +1531,172 @@ void SettingsWindow::RenderToDC(HDC targetHdc) {
 
 const SettingsWindow::HitTarget* SettingsWindow::HitTestDip(float dipX, float dipY) const {
     for (auto it = hitTargets_.rbegin(); it != hitTargets_.rend(); ++it) {
-        if (it->inViewport && (dipY < kViewTop || dipY > kViewBottom)) {
-            continue;
-        }
-        if (PtInDipRect(it->rect, dipX, dipY)) {
-            return &(*it);
-        }
+        if (it->inViewport && (dipY < kViewTop || dipY > kViewBottom)) continue;
+        if (PtInDipRect(it->rect, dipX, dipY)) return &(*it);
     }
     return nullptr;
+}
+
+void SettingsWindow::EnterInputMode(InputMode nextMode) {
+    if (inputMode_ == nextMode) return;
+    CommitOrCancelInput(true);
+
+    inputMode_ = nextMode;
+    editBuffer_.clear();
+    replaceOnFirstChar_ = false;
+
+    if (nextMode == InputMode::EditFps) {
+        editBuffer_ = std::to_wstring(editedCfg_.fps);
+        replaceOnFirstChar_ = true;
+    } else if (nextMode == InputMode::EditReplay) {
+        editBuffer_ = FormatReplayBoxValue(editedCfg_.replaySeconds, replayUnitMinutes_);
+        replaceOnFirstChar_ = true;
+    } else if (nextMode == InputMode::EditBitrate) {
+        editBuffer_ = std::to_wstring(editedCfg_.bitrateMbps);
+        replaceOnFirstChar_ = true;
+    } else if (nextMode == InputMode::CaptureHotkey) {
+        if (callbacks_.onSuspendHotkey) callbacks_.onSuspendHotkey(true);
+        ShowFeedback(L"Press your shortcut combination, or Esc to cancel.", false);
+    }
+    InvalidateWindow();
+}
+
+void SettingsWindow::CommitOrCancelInput(bool commit, bool showCancelFeedback) {
+    InputMode cur = inputMode_;
+    if (cur == InputMode::None) return;
+
+    inputMode_ = InputMode::None;
+    replaceOnFirstChar_ = false;
+
+    if (cur == InputMode::CaptureHotkey) {
+        if (callbacks_.onSuspendHotkey) callbacks_.onSuspendHotkey(false);
+        if (!commit && showCancelFeedback) {
+            ShowFeedback(L"Hotkey capture canceled.", false);
+        } else {
+            InvalidateWindow();
+        }
+        return;
+    }
+
+    if (commit && !editBuffer_.empty()) {
+        if (cur == InputMode::EditFps) {
+            uint32_t fps = 0;
+            if (ParseStrictPositiveUint(editBuffer_, fps)) {
+                editedCfg_.fps = std::clamp(fps, kMinFps, kMaxFps);
+            }
+        } else if (cur == InputMode::EditReplay) {
+            uint32_t secs = 0;
+            if (ParseDurationInput(editBuffer_, replayUnitMinutes_, secs)) {
+                editedCfg_.replaySeconds = secs;
+                if (editBuffer_.find(L'm') != std::wstring::npos || editBuffer_.find(L'M') != std::wstring::npos) {
+                    replayUnitMinutes_ = true;
+                } else if (editBuffer_.find(L's') != std::wstring::npos || editBuffer_.find(L'S') != std::wstring::npos) {
+                    replayUnitMinutes_ = false;
+                }
+            }
+        } else if (cur == InputMode::EditBitrate) {
+            uint32_t mbps = 0;
+            if (ParseStrictPositiveUint(editBuffer_, mbps)) {
+                editedCfg_.bitrateMbps = std::clamp(mbps, kMinBitrateMbps, kMaxBitrateMbps);
+            }
+        }
+    }
+
+    editBuffer_.clear();
+    InvalidateWindow();
+}
+
+bool SettingsWindow::HandleInputChar(wchar_t ch) {
+    if (inputMode_ == InputMode::None || inputMode_ == InputMode::CaptureHotkey) return false;
+    if (ch == L'\r' || ch == L'\n' || ch == 0x1B) return true;
+
+    if (ch == L'\b') {
+        if (replaceOnFirstChar_) {
+            editBuffer_.clear();
+            replaceOnFirstChar_ = false;
+        } else if (!editBuffer_.empty()) {
+            editBuffer_.pop_back();
+        }
+        InvalidateWindow();
+        return true;
+    }
+
+    bool allowed = false;
+    size_t maxLen = 4;
+    if (inputMode_ == InputMode::EditFps) {
+        allowed = (ch >= L'0' && ch <= L'9');
+        maxLen = 3;
+    } else if (inputMode_ == InputMode::EditBitrate) {
+        allowed = (ch >= L'0' && ch <= L'9');
+        maxLen = 2;
+    } else if (inputMode_ == InputMode::EditReplay) {
+        allowed = (ch >= L'0' && ch <= L'9') || ch == L'.' || ch == L':' ||
+                  ch == L'm' || ch == L'M' || ch == L's' || ch == L'S';
+        maxLen = 8;
+    }
+
+    if (allowed) {
+        if (replaceOnFirstChar_) {
+            editBuffer_.clear();
+            replaceOnFirstChar_ = false;
+        }
+        if (editBuffer_.size() < maxLen) {
+            editBuffer_.push_back(ch);
+            InvalidateWindow();
+        }
+    }
+    return true;
+}
+
+bool SettingsWindow::HandleInputKeyDown(UINT vk, LPARAM lParam) {
+    if (inputMode_ == InputMode::None) return false;
+
+    if (inputMode_ == InputMode::CaptureHotkey) {
+        if ((lParam & (1LL << 30)) != 0) return true;
+        if (vk == VK_ESCAPE) {
+            CommitOrCancelInput(false, true);
+            return true;
+        }
+        if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU ||
+            vk == VK_LWIN || vk == VK_RWIN ||
+            vk == VK_LSHIFT || vk == VK_RSHIFT ||
+            vk == VK_LCONTROL || vk == VK_RCONTROL ||
+            vk == VK_LMENU || vk == VK_RMENU) {
+            return true;
+        }
+        uint32_t mods = 0;
+        if (GetKeyState(VK_CONTROL) < 0) mods |= MOD_CONTROL;
+        if (GetKeyState(VK_MENU) < 0) mods |= MOD_ALT;
+        if (GetKeyState(VK_SHIFT) < 0) mods |= MOD_SHIFT;
+        if (GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0) mods |= MOD_WIN;
+
+        HotkeySpec candidate;
+        if (FormatHotkeyFromVk(mods, vk, candidate)) {
+            editedCfg_.hotkeySave = candidate;
+            CommitOrCancelInput(false, false);
+            ShowFeedback(L"Hotkey set to " + Utf8ToWide(candidate.display) + L". Apply to save.", false);
+        } else {
+            ShowFeedback(L"Add Ctrl, Alt, or Shift for letters/numbers, or press F1-F24/Numpad.", true);
+        }
+        return true;
+    }
+
+    if (vk == VK_RETURN) {
+        CommitOrCancelInput(true);
+        return true;
+    }
+    if (vk == VK_ESCAPE) {
+        CommitOrCancelInput(false);
+        return true;
+    }
+    if (vk == VK_TAB) {
+        InputMode cur = inputMode_;
+        CommitOrCancelInput(true);
+        if (cur == InputMode::EditFps) EnterInputMode(InputMode::EditReplay);
+        else if (cur == InputMode::EditReplay) EnterInputMode(InputMode::EditBitrate);
+        return true;
+    }
+    return false;
 }
 
 void SettingsWindow::UpdateBitrateFromDip(float dipX) {
@@ -1727,7 +1704,7 @@ void SettingsWindow::UpdateBitrateFromDip(float dipX) {
     if (w <= 1.0f) return;
     float t = ClampF((dipX - sliderTrackRect_.left) / w, 0.0f, 1.0f);
     uint32_t nextMbps = static_cast<uint32_t>(std::lround(5.0f + t * 75.0f));
-    nextMbps = std::clamp(nextMbps, 5u, 80u);
+    nextMbps = std::clamp(nextMbps, 5u, kMaxBitrateMbps);
     if (editedCfg_.bitrateMbps != nextMbps) {
         editedCfg_.bitrateMbps = nextMbps;
         InvalidateWindow();
@@ -1736,16 +1713,20 @@ void SettingsWindow::UpdateBitrateFromDip(float dipX) {
 
 void SettingsWindow::ExecuteHit(const HitKey& key, float dipX) {
     switch (key.action) {
+        case HitAction::WinMinimize:
+            ShowWindow(hwnd_, SW_MINIMIZE);
+            break;
+        case HitAction::WinClose:
+        case HitAction::RailHide:
+            DestroyWindow(hwnd_);
+            break;
+        case HitAction::TitleSaveClip:
+            if (callbacks_.onSaveReplay) callbacks_.onSaveReplay();
+            break;
         case HitAction::SelectTab:
             SetActiveTab(static_cast<SettingsTab>(key.param));
             break;
-        case HitAction::SidebarSaveClip:
-            if (callbacks_.onSaveReplay) callbacks_.onSaveReplay();
-            break;
-        case HitAction::SidebarHide:
-            DestroyWindow(hwnd_);
-            break;
-        case HitAction::SidebarQuit:
+        case HitAction::RailQuit:
             if (callbacks_.onQuit) callbacks_.onQuit();
             break;
         case HitAction::ClipsRefresh:
@@ -1777,8 +1758,8 @@ void SettingsWindow::ExecuteHit(const HitKey& key, float dipX) {
             }
             break;
         }
-        case HitAction::EmptyGoCapture:
-            SetActiveTab(SettingsTab::Capture);
+        case HitAction::EmptyGoSettings:
+            SetActiveTab(SettingsTab::Settings);
             break;
         case HitAction::RefreshMonitors:
             ReloadMonitors();
@@ -1788,33 +1769,36 @@ void SettingsWindow::ExecuteHit(const HitKey& key, float dipX) {
             editedCfg_.monitorIndex = static_cast<uint32_t>(key.param);
             InvalidateWindow();
             break;
-        case HitAction::PresetCompetitive:
-            editedCfg_.fps = 60;
-            editedCfg_.bitrateMbps = 20;
-            InvalidateWindow();
-            break;
-        case HitAction::PresetHigh:
-            editedCfg_.fps = 60;
-            editedCfg_.bitrateMbps = 40;
-            InvalidateWindow();
-            break;
-        case HitAction::PresetCompact:
-            editedCfg_.fps = 30;
-            editedCfg_.bitrateMbps = 10;
-            InvalidateWindow();
-            break;
-        case HitAction::SelectFps:
+        case HitAction::SelectFpsPreset:
             editedCfg_.fps = static_cast<uint32_t>(key.param);
             InvalidateWindow();
             break;
-        case HitAction::SelectSeconds:
+        case HitAction::EditFpsBox:
+            EnterInputMode(InputMode::EditFps);
+            break;
+        case HitAction::SelectReplayPreset:
             editedCfg_.replaySeconds = static_cast<uint32_t>(key.param);
+            replayUnitMinutes_ = (editedCfg_.replaySeconds >= 60u && (editedCfg_.replaySeconds % 60u) == 0u);
             InvalidateWindow();
             break;
+        case HitAction::EditReplayBox:
+            EnterInputMode(InputMode::EditReplay);
+            break;
+        case HitAction::ToggleReplayUnit: {
+            bool wantMin = (key.param == 1);
+            if (replayUnitMinutes_ != wantMin) {
+                replayUnitMinutes_ = wantMin;
+                InvalidateWindow();
+            }
+            break;
+        }
         case HitAction::BitrateSlider:
             draggingSlider_ = true;
             SetCapture(hwnd_);
             UpdateBitrateFromDip(dipX);
+            break;
+        case HitAction::EditBitrateBox:
+            EnterInputMode(InputMode::EditBitrate);
             break;
         case HitAction::ToggleDesktopAudio:
             editedCfg_.recordDesktopAudio = !editedCfg_.recordDesktopAudio;
@@ -1829,11 +1813,13 @@ void SettingsWindow::ExecuteHit(const HitKey& key, float dipX) {
             InvalidateWindow();
             break;
         case HitAction::HotkeyCaptureBtn:
-            if (recordingHotkey_) EndHotkeyCapture(true);
-            else BeginHotkeyCapture();
+            if (inputMode_ == InputMode::CaptureHotkey) {
+                CommitOrCancelInput(false, true);
+            } else {
+                EnterInputMode(InputMode::CaptureHotkey);
+            }
             break;
         case HitAction::HotkeyResetBtn:
-            if (recordingHotkey_) EndHotkeyCapture(false);
             editedCfg_.hotkeySave = MakeDefaultConfig().hotkeySave;
             ShowFeedback(L"Hotkey reset to " + Utf8ToWide(editedCfg_.hotkeySave.display) + L". Apply to save.", false);
             break;
@@ -1844,12 +1830,11 @@ void SettingsWindow::ExecuteHit(const HitKey& key, float dipX) {
             OpenFolderInExplorer(editedCfg_.outputDir.empty() ? ExpandEnvPath(editedCfg_.outputDirRaw) : editedCfg_.outputDir);
             break;
         case HitAction::DiscardChanges:
-            if (recordingHotkey_) EndHotkeyCapture(false);
             editedCfg_ = appliedCfg_;
+            replayUnitMinutes_ = (editedCfg_.replaySeconds >= 60u && (editedCfg_.replaySeconds % 60u) == 0u);
             ShowFeedback(L"Reverted unsaved changes.", false);
             break;
         case HitAction::ApplyChanges: {
-            if (recordingHotkey_) EndHotkeyCapture(false);
             std::wstring fb;
             bool isErr = false;
             if (callbacks_.onApply) {
@@ -1858,6 +1843,7 @@ void SettingsWindow::ExecuteHit(const HitKey& key, float dipX) {
             if (callbacks_.getConfig) {
                 appliedCfg_ = callbacks_.getConfig();
                 editedCfg_ = appliedCfg_;
+                replayUnitMinutes_ = (editedCfg_.replaySeconds >= 60u && (editedCfg_.replaySeconds % 60u) == 0u);
             }
             ReloadClips();
             if (!fb.empty()) ShowFeedback(fb, isErr);
@@ -1932,67 +1918,33 @@ void SettingsWindow::DeleteClipToRecycleBin(size_t clipIndex) {
     }
 }
 
-void SettingsWindow::BeginHotkeyCapture() {
-    if (recordingHotkey_) return;
-    recordingHotkey_ = true;
-    if (callbacks_.onSuspendHotkey) callbacks_.onSuspendHotkey(true);
-    ShowFeedback(L"Press your shortcut combination, or Esc to cancel.", false);
-    SetFocus(hwnd_);
-    InvalidateWindow();
-}
-
-void SettingsWindow::EndHotkeyCapture(bool cancelMsg) {
-    if (!recordingHotkey_) return;
-    recordingHotkey_ = false;
-    if (callbacks_.onSuspendHotkey) callbacks_.onSuspendHotkey(false);
-    if (cancelMsg) {
-        ShowFeedback(L"Hotkey capture canceled.", false);
-    } else {
-        InvalidateWindow();
-    }
-}
-
-bool SettingsWindow::HandleHotkeyKeyDown(UINT vk, LPARAM lParam) {
-    if (!recordingHotkey_) return false;
-    if ((lParam & (1LL << 30)) != 0) return true;
-    if (vk == VK_ESCAPE) {
-        EndHotkeyCapture(true);
-        return true;
-    }
-    if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU ||
-        vk == VK_LWIN || vk == VK_RWIN ||
-        vk == VK_LSHIFT || vk == VK_RSHIFT ||
-        vk == VK_LCONTROL || vk == VK_RCONTROL ||
-        vk == VK_LMENU || vk == VK_RMENU) {
-        return true;
-    }
-    uint32_t mods = 0;
-    if (GetKeyState(VK_CONTROL) < 0) mods |= MOD_CONTROL;
-    if (GetKeyState(VK_MENU) < 0) mods |= MOD_ALT;
-    if (GetKeyState(VK_SHIFT) < 0) mods |= MOD_SHIFT;
-    if (GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0) mods |= MOD_WIN;
-
-    HotkeySpec candidate;
-    if (FormatHotkeyFromVk(mods, vk, candidate)) {
-        editedCfg_.hotkeySave = candidate;
-        EndHotkeyCapture(false);
-        ShowFeedback(L"Hotkey set to " + Utf8ToWide(candidate.display) + L". Apply to save.", false);
-    } else {
-        ShowFeedback(L"Add Ctrl, Alt, or Shift for letters/numbers, or press F1-F24/Numpad.", true);
-    }
-    return true;
-}
-
 LRESULT SettingsWindow::WndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == kWmSelectTab) {
         int t = static_cast<int>(wParam);
-        if (t >= 0 && t <= 3) {
-            SetActiveTab(static_cast<SettingsTab>(t));
-        }
+        SetActiveTab(t == 0 ? SettingsTab::Clips : SettingsTab::Settings);
         return 0;
     }
 
     switch (msg) {
+        case WM_NCCALCSIZE:
+            if (wParam == TRUE) return 0;
+            break;
+
+        case WM_NCACTIVATE:
+            if (!IsIconic(hwnd_)) return 1;
+            break;
+
+        case WM_NCHITTEST: {
+            POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(hwnd_, &pt);
+            float dipX = static_cast<float>(pt.x) * 96.0f / static_cast<float>(dpi_);
+            float dipY = static_cast<float>(pt.y) * 96.0f / static_cast<float>(dpi_);
+            if (dipY >= 0.0f && dipY < kTitleBarH && !HitTestDip(dipX, dipY)) {
+                return HTCAPTION;
+            }
+            return HTCLIENT;
+        }
+
         case WM_CREATE:
             ReloadConfigState();
             RefreshStatus();
@@ -2066,8 +2018,11 @@ LRESULT SettingsWindow::WndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_SETCURSOR:
             if (LOWORD(lParam) == HTCLIENT) {
-                bool hand = draggingSlider_ || (hoveredHit_.action != HitAction::None);
-                SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : IDC_ARROW));
+                bool textCur = (hoveredHit_.action == HitAction::EditFpsBox ||
+                                hoveredHit_.action == HitAction::EditReplayBox ||
+                                hoveredHit_.action == HitAction::EditBitrateBox);
+                bool hand = draggingSlider_ || (!textCur && hoveredHit_.action != HitAction::None);
+                SetCursor(LoadCursorW(nullptr, textCur ? IDC_IBEAM : (hand ? IDC_HAND : IDC_ARROW)));
                 return TRUE;
             }
             break;
@@ -2076,13 +2031,24 @@ LRESULT SettingsWindow::WndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
             SetFocus(hwnd_);
             float dipX = static_cast<float>(GET_X_LPARAM(lParam)) * 96.0f / static_cast<float>(dpi_);
             float dipY = static_cast<float>(GET_Y_LPARAM(lParam)) * 96.0f / static_cast<float>(dpi_);
-            if (const HitTarget* hit = HitTestDip(dipX, dipY)) {
-                if (recordingHotkey_ && hit->key.action != HitAction::HotkeyCaptureBtn) {
-                    EndHotkeyCapture(true);
-                }
+            const HitTarget* hit = HitTestDip(dipX, dipY);
+
+            auto matchesCurrentInput = [&](const HitTarget* h) -> bool {
+                if (!h) return false;
+                if (inputMode_ == InputMode::EditFps && h->key.action == HitAction::EditFpsBox) return true;
+                if (inputMode_ == InputMode::EditReplay && h->key.action == HitAction::EditReplayBox) return true;
+                if (inputMode_ == InputMode::EditBitrate && h->key.action == HitAction::EditBitrateBox) return true;
+                if (inputMode_ == InputMode::CaptureHotkey && h->key.action == HitAction::HotkeyCaptureBtn) return true;
+                return false;
+            };
+
+            if (inputMode_ != InputMode::None && !matchesCurrentInput(hit)) {
+                bool wasHotkey = (inputMode_ == InputMode::CaptureHotkey);
+                CommitOrCancelInput(!wasHotkey, wasHotkey);
+            }
+
+            if (hit) {
                 ExecuteHit(hit->key, dipX);
-            } else if (recordingHotkey_) {
-                EndHotkeyCapture(true);
             }
             return 0;
         }
@@ -2107,9 +2073,15 @@ LRESULT SettingsWindow::WndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_CHAR:
+            if (HandleInputChar(static_cast<wchar_t>(wParam))) {
+                return 0;
+            }
+            break;
+
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN:
-            if (HandleHotkeyKeyDown(static_cast<UINT>(wParam), lParam)) {
+            if (HandleInputKeyDown(static_cast<UINT>(wParam), lParam)) {
                 return 0;
             }
             break;
@@ -2119,8 +2091,9 @@ LRESULT SettingsWindow::WndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
                 draggingSlider_ = false;
                 if (GetCapture() == hwnd_) ReleaseCapture();
             }
-            if (recordingHotkey_) {
-                EndHotkeyCapture(true);
+            if (inputMode_ != InputMode::None) {
+                bool wasHotkey = (inputMode_ == InputMode::CaptureHotkey);
+                CommitOrCancelInput(!wasHotkey, wasHotkey);
             }
             return 0;
 
@@ -2140,10 +2113,7 @@ LRESULT SettingsWindow::WndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_DESTROY:
-            if (recordingHotkey_) {
-                recordingHotkey_ = false;
-                if (callbacks_.onSuspendHotkey) callbacks_.onSuspendHotkey(false);
-            }
+            CommitOrCancelInput(false, false);
             if (draggingSlider_) {
                 draggingSlider_ = false;
                 if (GetCapture() == hwnd_) ReleaseCapture();

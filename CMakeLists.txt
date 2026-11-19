@@ -71,6 +71,7 @@ target_link_libraries(clipper
     d2d1
     dwrite
     windowscodecs
+    mfreadwrite
 )
 
 add_executable(clipper_tests

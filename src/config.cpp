@@ -13,13 +13,6 @@ namespace clipper {
 
 namespace {
 
-constexpr uint32_t kMinFps = 30;
-constexpr uint32_t kMaxFps = 60;
-constexpr uint32_t kMinBitrateMbps = 2;
-constexpr uint32_t kMaxBitrateMbps = 80;
-constexpr uint32_t kMinReplaySeconds = 5;
-constexpr uint32_t kMaxReplaySeconds = 300;
-
 struct NamedKeyDef {
     const char* tokenLower;
     uint32_t vk;
@@ -184,7 +177,7 @@ void ClampAndValidate(AppConfig& cfg, std::vector<std::string>& warnings) {
     if (static_cast<uint64_t>(cfg.bitrateMbps) * cfg.replaySeconds > kMaxBitrateSecondsBudget) {
         uint32_t maxAllowedSeconds = std::max(kMinReplaySeconds, kMaxBitrateSecondsBudget / cfg.bitrateMbps);
         warnings.push_back("replay_seconds reduced from " + std::to_string(cfg.replaySeconds) + " to " +
-                           std::to_string(maxAllowedSeconds) + " to stay within 2GB ring RAM budget");
+                           std::to_string(maxAllowedSeconds) + " to stay within 8GB ring RAM budget");
         cfg.replaySeconds = maxAllowedSeconds;
     }
     if (cfg.outputDirRaw.empty()) {
@@ -304,11 +297,8 @@ bool ParseHotkeyString(std::string_view text, HotkeySpec& out) {
 }
 
 bool IsSafeHotkey(uint32_t modifiers, uint32_t vk) {
-    uint32_t mods = modifiers & (MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_WIN);
-    std::string token;
-    bool needsMod = false;
-    if (!VkToCanonicalToken(vk, token, needsMod)) return false;
-    return !needsMod || mods != 0;
+    HotkeySpec unused;
+    return FormatHotkeyFromVk(modifiers, vk, unused);
 }
 
 bool FormatHotkeyFromVk(uint32_t modifiers, uint32_t vk, HotkeySpec& out) {
@@ -356,6 +346,120 @@ std::wstring ExpandEnvPath(std::string_view utf8Path) {
     if (written == 0) return wide;
     if (!out.empty() && out.back() == L'\0') out.pop_back();
     return out;
+}
+
+bool ParseDurationInput(std::wstring_view text, bool defaultMinutes, uint32_t& outSeconds) {
+    auto isSpaceW = [](wchar_t ch) {
+        return ch == L' ' || ch == L'\t' || ch == L'\r' || ch == L'\n';
+    };
+    auto trimW = [&](std::wstring_view s) {
+        size_t b = 0;
+        while (b < s.size() && isSpaceW(s[b])) ++b;
+        size_t e = s.size();
+        while (e > b && isSpaceW(s[e - 1])) --e;
+        return s.substr(b, e - b);
+    };
+    auto endsWithNoCase = [](std::wstring_view s, std::wstring_view suffix) {
+        if (s.size() < suffix.size()) return false;
+        return _wcsnicmp(s.data() + (s.size() - suffix.size()), suffix.data(), suffix.size()) == 0;
+    };
+
+    std::wstring_view clean = trimW(text);
+    if (clean.empty()) return false;
+
+    size_t colon = clean.find(L':');
+    if (colon != std::wstring_view::npos) {
+        if (clean.find(L':', colon + 1) != std::wstring_view::npos) return false;
+        std::wstring_view minPart = trimW(clean.substr(0, colon));
+        std::wstring_view secPart = trimW(clean.substr(colon + 1));
+        if (minPart.empty() || secPart.empty()) return false;
+        uint64_t mins = 0, secs = 0;
+        for (wchar_t ch : minPart) {
+            if (ch < L'0' || ch > L'9') return false;
+            mins = mins * 10 + static_cast<uint64_t>(ch - L'0');
+            if (mins > 10000ULL) mins = 10000ULL;
+        }
+        for (wchar_t ch : secPart) {
+            if (ch < L'0' || ch > L'9') return false;
+            secs = secs * 10 + static_cast<uint64_t>(ch - L'0');
+            if (secs > 1000ULL) return false;
+        }
+        if (secs >= 60ULL) return false;
+        uint64_t total = mins * 60ULL + secs;
+        if (total == 0) return false;
+        outSeconds = static_cast<uint32_t>(std::clamp<uint64_t>(total, kMinReplaySeconds, kMaxReplaySeconds));
+        return true;
+    }
+
+    bool useMinutes = defaultMinutes;
+    static constexpr std::wstring_view kSecSuffixes[] = { L"secs", L"sec", L"s" };
+    static constexpr std::wstring_view kMinSuffixes[] = { L"mins", L"min", L"m" };
+    bool matchedSuffix = false;
+    for (auto suf : kSecSuffixes) {
+        if (endsWithNoCase(clean, suf)) {
+            useMinutes = false;
+            clean = trimW(clean.substr(0, clean.size() - suf.size()));
+            matchedSuffix = true;
+            break;
+        }
+    }
+    if (!matchedSuffix) {
+        for (auto suf : kMinSuffixes) {
+            if (endsWithNoCase(clean, suf)) {
+                useMinutes = true;
+                clean = trimW(clean.substr(0, clean.size() - suf.size()));
+                break;
+            }
+        }
+    }
+    if (clean.empty()) return false;
+
+    double intVal = 0.0;
+    double fracVal = 0.0;
+    double fracDiv = 1.0;
+    bool seenDot = false;
+    bool seenDigit = false;
+    for (wchar_t ch : clean) {
+        if (ch >= L'0' && ch <= L'9') {
+            seenDigit = true;
+            if (seenDot) {
+                fracDiv *= 10.0;
+                fracVal += static_cast<double>(ch - L'0') / fracDiv;
+            } else {
+                intVal = std::min(1e9, intVal * 10.0 + static_cast<double>(ch - L'0'));
+            }
+        } else if (ch == L'.' && !seenDot) {
+            seenDot = true;
+        } else {
+            return false;
+        }
+    }
+    if (!seenDigit) return false;
+
+    double val = intVal + fracVal;
+    if (val <= 0.0 || !std::isfinite(val)) return false;
+
+    double totalSecs = val * (useMinutes ? 60.0 : 1.0);
+    if (!std::isfinite(totalSecs)) {
+        outSeconds = kMaxReplaySeconds;
+        return true;
+    }
+    long long rounded = std::llround(totalSecs);
+    outSeconds = static_cast<uint32_t>(
+        std::clamp<long long>(rounded, static_cast<long long>(kMinReplaySeconds), static_cast<long long>(kMaxReplaySeconds)));
+    return true;
+}
+
+std::wstring FormatReplayLengthShort(uint32_t seconds) {
+    if (seconds < 60u) {
+        return std::to_wstring(seconds) + L"s";
+    }
+    uint32_t mins = seconds / 60u;
+    uint32_t rem = seconds % 60u;
+    if (rem == 0u) {
+        return std::to_wstring(mins) + L"m";
+    }
+    return std::to_wstring(mins) + L"m " + std::to_wstring(rem) + L"s";
 }
 
 ConfigParseResult ParseConfigText(std::string_view text, AppConfig base) {

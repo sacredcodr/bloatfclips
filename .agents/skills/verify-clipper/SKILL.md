@@ -43,6 +43,7 @@ Run the live 3-second replay capture and `IMFSourceReader` decode-back check in 
 
 ```powershell
 c:\Users\yugi\Desktop\recorder\build\clipper_bench.exe --self-test-clip 3 --out c:\Users\yugi\Desktop\recorder\build\test_out\live_replay.mp4
+c:\Users\yugi\Desktop\recorder\build\clipper_bench.exe --self-test-clip 2 --fps=120 --out c:\Users\yugi\Desktop\recorder\build\test_out\live_replay_120fps.mp4
 ```
 
 Run the 5-round alternating 3D swapchain GPU load benchmark (launches `clipper.exe --tray --fail-fast` headlessly). Close heavy background GPU apps first if checking sub-millisecond baseline jitter.
@@ -53,7 +54,7 @@ c:\Users\yugi\Desktop\recorder\build\clipper_bench.exe --gpu-load-bench 3 --runs
 
 If testing tray startup directly, pass `--tray --fail-fast --ready-event=<UniqueName>` to `build\clipper.exe` and terminate only the matching child process PID via `WM_CLOSE`.
 
-When verifying UI changes, launch `build\clipper.exe` without `--tray` and verify `ClipperSettingsWindow` opens (`IsWindowVisible`, >= `800x500`), destroys itself cleanly on `WM_CLOSE` while leaving `ClipperTrayHiddenWindow` running, re-opens on a second `clipper.exe` invocation, and exits cleanly when `WM_CLOSE` is sent to `ClipperTrayHiddenWindow`.
+When verifying UI changes, launch `build\clipper.exe` without `--tray` and verify `ClipperSettingsWindow` opens (`IsWindowVisible`, `1000x640`, `children=0`), destroys itself cleanly on `WM_CLOSE` while leaving `ClipperTrayHiddenWindow` running, re-opens on a second `clipper.exe` invocation, and exits cleanly when `WM_CLOSE` is sent to `ClipperTrayHiddenWindow`.
 
 ## Evidence
 
@@ -61,7 +62,7 @@ Record and verify every pass gate below before reporting success.
 
 * `cmake --build build` exits `0` with zero compiler warnings.
 * `clipper_tests.exe` prints all 6 `PASS` lines (`TestConfig`, `TestRingBuffer`, `TestMp4StructureAndCo64`, `TestRecorderComponentsAndLifecycle`, `TestEndToEndNvencAacAndSourceReader`, `TestClipLibrary`) and `Total failures: 0`.
-* `clipper_bench.exe --self-test-clip 3` prints `PASS SelfTestClip` with `recoveries=0`, `err=0` on both video and audio, valid MP4 duration around `3.0s`, `videoFrames > 0`, and `pcmBytes > 0`.
+* `clipper_bench.exe --self-test-clip 3` (60 fps) and `--self-test-clip 2 --fps=120` print `PASS SelfTestClip` with `recoveries=0`, `err=0` on both video and audio, valid MP4 duration, `videoFrames > 0`, and `pcmBytes > 0` (remove temporary `live_replay_120fps.mp4` afterward).
 * `clipper_bench.exe --gpu-load-bench 3 --runs 5` exits `0` with `max active disk write=0 B` and prints CPU, RAM, and frame-time medians across all alternating rounds.
 
 ## Cleanup

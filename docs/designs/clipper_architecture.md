@@ -26,16 +26,16 @@ Parsed at startup from `clipper.ini` and optional CLI flags, with validation con
 | Field | Default | Allowed Range / Values | Notes |
 | --- | --- | --- | --- |
 | `monitor_index` | `0` | `0..N-1` | Index among attached NVIDIA DXGI outputs (falls back to all attached outputs if none) |
-| `fps` | `60` | `30..60` | Capture and encode target rate |
+| `fps` | `60` | `15..240` | Capture and encode target rate |
 | `bitrate_mbps` | `20` | `2..80` | VBR target (`max = 1.35 * target`) |
-| `replay_seconds` | `60` | `5..300` | Rolling retention window |
+| `replay_seconds` | `60` | `5..3600` | Rolling retention window (up to 60 min) |
 | `record_desktop_audio` | `true` | `true`, `false` | WASAPI loopback source |
 | `record_mic_audio` | `true` | `true`, `false` | WASAPI mic source (mixed into track 1) |
 | `hotkey_save` | `Ctrl+Alt+S` | Win32 modifier + VK | Formatted/validated via `FormatHotkeyFromVk` and `IsSafeHotkey` (extended keys + Numpad/OEM); avoids NVIDIA overlay `Alt+F10` collision |
 | `output_dir` | `%USERPROFILE%\Videos\Clips` | Expanded directory path | Recursive creation on save |
 | `save_chime` | `true` | `true`, `false` | Non-blocking `MessageBeep(MB_OK)` |
 
-Memory budget invariant enforced at config parse time: `bitrate_mbps * replay_seconds <= 12000` (caps maximum video ring arena around 2.0 GB).
+Memory budget invariant enforced at config parse time: `bitrate_mbps * replay_seconds <= 48000` (`kMaxBitrateSecondsBudget`, caps maximum video ring arena around 8.0 GB and validates custom duration input via `ParseDurationInput` / `FormatReplayLengthShort`).
 
 ### `PacketRingBuffer` and Sizing Formulas
 
@@ -67,9 +67,9 @@ Invariants:
    - Woken by manual hotkey/menu save trigger (latching `saveRequestPtsUs`). Waits on `PacketRingBuffer::WaitForPts` watermark rather than fixed sleep, snapshots video and audio rings sequentially, muxes fast-start `.mp4` to a `.tmp` sibling path via `WriteMp4File` (`FILE_FLAG_SEQUENTIAL_SCAN`), atomically renames via `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)`, and calls `MessageBeep(MB_OK)` when `save_chime` is enabled.
 4. **Main Thread (Win32 Tray Daemon and On-Demand Direct2D Desktop UI):**
    - Hidden top-level `WS_OVERLAPPED` window (`ClipperTrayHiddenWindow`, chosen over `HWND_MESSAGE` so Windows delivers `TaskbarCreated` broadcasts) owning `Shell_NotifyIconW`, `RegisterHotKey` (reporting collision via tray balloon/feedback), popup menu (`Open Settings`, `Save Replay`, `Microphone`, `Open Clips Folder`, `Exit`), and single-instance wakeup (`ClipperShowSettingsWindow` re-opens the existing process UI on second launch without `--tray`/`--fail-fast`).
-   - On-demand dark-mode Direct2D + DirectWrite + WIC desktop window (`ClipperSettingsWindow` in `src/settings_window.{h,cpp}`, custom vector icons in `src/ui_icons.h`, MP4 clip scanner/duration probe in `src/clip_library.{h,cpp}`, rendered via `ID2D1DCRenderTarget` + top-down 32bpp DIB backbuffer scaled via `GetDpiForMonitor`) opens on launch unless `--tray`/`--minimized`/`--fail-fast` is passed (`--page=clips|capture|audio|hotkeys` selects initial tab).
-   - Provides four icon-navigated panels (**Clips** with `IShellItemImageFactory` video thumbnails, `moov/mvhd` duration badges, play/reveal/`SHFileOperationW` Recycle Bin delete; **Capture** with visual DXGI/DisplayConfig monitor cards from `EnumerateCaptureMonitors()`, quality presets, `30/60 fps` toggle, replay duration pills, draggable bitrate slider, and live RAM budget meter; **Audio** with channel switches and live packet/AAC counters; **Hotkeys** with keycap recorder and `IFileOpenDialog` folder picker) plus a persistent sidebar buffer status card.
-   - `ApplyNewConfig` calls `UpdateSaveSettings` in-place (preserving rolling RAM rings) when only hotkey/folder/chime changed, or cleanly restarts `RecorderEngine` when monitor/capture/ring/audio-source parameters changed, persisting `clipper.ini` only after verified restart. Closing or clicking **Tray** calls `DestroyWindow` to release all GUI Direct2D/DirectWrite/WIC/DIB/timer handles while keeping the tray daemon active. Accepts `--fail-fast`, `--tray`/`--minimized`, `--page=...`, and `--ready-event=<name>`.
+   - On-demand dark-mode Direct2D + DirectWrite + WIC desktop window (`ClipperSettingsWindow` in `src/settings_window.{h,cpp}`, `1000x640` DIPs borderless Win11 Fluent frame via `WM_NCCALCSIZE`/`DwmExtendFrameIntoClientArea` + bare `Segoe Fluent Icons` navigation rail, MP4 clip scanner/duration probe in `src/clip_library.{h,cpp}`, rendered via `ID2D1DCRenderTarget` + top-down 32bpp DIB backbuffer scaled via `GetDpiForMonitor`) opens on launch unless `--tray`/`--minimized`/`--fail-fast` is passed (`--page=clips|settings`, with `capture`/`audio`/`hotkeys` aliased to `settings`).
+   - Provides two views navigated from the `54 px` icon rail: **Clips** (3-column borderless gallery with `IShellItemImageFactory` thumbnails plus in-process `IMFSourceReader` first-frame fallback, `moov/mvhd` duration badges, play/reveal/`SHFileOperationW` Recycle Bin delete) and **Settings** (stacked Fluent rows for display selection via `EnumerateCaptureMonitors()`, `30/60/120/144` FPS presets + custom inline FPS input `15..240`, `30s/1m/2m/5m/10m` presets + custom inline duration input `5..3600s` with `sec | min` toggle, `2..80` Mbps slider + inline edit box, audio/chime switches, keycap hotkey capture, and `IFileOpenDialog` folder picker with live ring RAM estimate).
+   - `ApplyNewConfig` calls `UpdateSaveSettings` in-place (preserving rolling RAM rings) when only hotkey/folder/chime changed, or cleanly restarts `RecorderEngine` when monitor/capture/ring/audio-source parameters changed, persisting `clipper.ini` only after verified restart. Closing or clicking **Minimize to tray** calls `DestroyWindow` to release all GUI Direct2D/DirectWrite/WIC/DIB/timer handles while keeping the tray daemon active. Accepts `--fail-fast`, `--tray`/`--minimized`, `--page=...`, and `--ready-event=<name>`.
 5. **Shutdown Sequence:**
    - Signal shutdown flags/events under lifecycle mutex, join saver, audio, and video threads (`Stopping -> Stopped`), drain async NVENC slots in FIFO order + `NV_ENC_PIC_FLAG_EOS`, and free rings.
 
@@ -89,6 +89,6 @@ Invariants:
 ## Binary Layout and Verification
 
 - `clipper_core`: static library containing `config`, `clip_library`, `ring_buffer`, `mp4_muxer`, and pipeline modules (`EnumerateCaptureMonitors()` shared by `VideoPipeline` and `SettingsWindow`).
-- `clipper.exe`: Win32 tray daemon with on-demand Direct2D/DirectWrite/WIC `SettingsWindow` (zero `IMFSourceReader` or test code).
-- `clipper_tests.exe`: unit tests (`Config` incl. `FormatHotkeyFromVk`/`IsSafeHotkey`/`ValidateAppConfig`, `PacketRingBuffer` wrap/generation/stress/audio-range, ISOBMFF structural checks incl. `elst`, negative `HEAACWAVEINFO`, `> 4 GiB` `co64` math, component lifecycle + `EnumerateCaptureMonitors()` + `UpdateSaveSettings`) + real NVENC H.264 + MF AAC encode -> `WriteMp4File` -> `IMFSourceReader` decode-back verification + `TestClipLibrary` (`FormatBytesHuman`, `FormatDurationShort`, `ProbeMp4DurationSeconds`, `ScanClipsDirectory`).
-- `clipper_bench.exe`: `--self-test-clip <sec> --out <file.mp4>` and alternating `--gpu-load-bench <sec> --runs <N>` D3D11 + DXGI flip-model swapchain benchmark spawning `clipper.exe --tray --fail-fast --ready-event=...`.
+- `clipper.exe`: Win32 tray daemon with on-demand Direct2D/DirectWrite/WIC `SettingsWindow` (uses `mfreadwrite` strictly for on-demand clip thumbnail first-frame fallback while the window is open, torn down on close to tray).
+- `clipper_tests.exe`: unit tests (`Config` incl. `FormatHotkeyFromVk`/`IsSafeHotkey`/`ValidateAppConfig`/`ParseDurationInput`/`FormatReplayLengthShort` across `15..240` fps and `5..3600` s with `48000` budget, `PacketRingBuffer` wrap/generation/stress/audio-range, ISOBMFF structural checks incl. `elst`, negative `HEAACWAVEINFO`, `> 4 GiB` `co64` math, component lifecycle + `EnumerateCaptureMonitors()` + `UpdateSaveSettings`) + real NVENC H.264 + MF AAC encode -> `WriteMp4File` -> `IMFSourceReader` decode-back verification + `TestClipLibrary` (`FormatBytesHuman`, `FormatDurationShort`, `ProbeMp4DurationSeconds`, `ScanClipsDirectory`).
+- `clipper_bench.exe`: `--self-test-clip <sec> [--fps=N] --out <file.mp4>` and alternating `--gpu-load-bench <sec> --runs <N>` D3D11 + DXGI flip-model swapchain benchmark spawning `clipper.exe --tray --fail-fast --ready-event=...`.

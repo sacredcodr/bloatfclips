@@ -387,10 +387,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
             readyEventName = arg.substr(14);
         } else if (arg.rfind(L"--page=", 0) == 0) {
             std::wstring p = arg.substr(7);
-            if (_wcsicmp(p.c_str(), L"capture") == 0) initialTab = clipper::SettingsTab::Capture;
-            else if (_wcsicmp(p.c_str(), L"audio") == 0) initialTab = clipper::SettingsTab::Audio;
-            else if (_wcsicmp(p.c_str(), L"hotkeys") == 0) initialTab = clipper::SettingsTab::Hotkeys;
-            else initialTab = clipper::SettingsTab::Clips;
+            if (_wcsicmp(p.c_str(), L"settings") == 0 ||
+                _wcsicmp(p.c_str(), L"capture") == 0 ||
+                _wcsicmp(p.c_str(), L"audio") == 0 ||
+                _wcsicmp(p.c_str(), L"hotkeys") == 0) {
+                initialTab = clipper::SettingsTab::Settings;
+            } else {
+                initialTab = clipper::SettingsTab::Clips;
+            }
         }
     }
 
@@ -443,7 +447,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         if (app.engine) {
             st.state = app.engine->State();
             st.video = app.engine->GetVideoStats();
-            st.audio = app.engine->GetAudioStats();
         }
         st.lastError = app.lastStartError;
         return st;

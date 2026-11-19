@@ -153,12 +153,38 @@ void TestConfig() {
     CHECK(roundTrip.config.hotkeySave == def.hotkeySave);
 
     ConfigParseResult clamped = ParseConfigText(
-        "fps=120\nbitrate_mbps=999\nreplay_seconds=300\nhotkey_save=Alt+F10\n");
-    CHECK(clamped.config.fps == 60);
+        "fps=300\nbitrate_mbps=999\nreplay_seconds=1200\nhotkey_save=Alt+F10\n");
+    CHECK(clamped.config.fps == 240);
     CHECK(clamped.config.bitrateMbps == 80);
-    CHECK(clamped.config.replaySeconds == 150);
+    CHECK(clamped.config.replaySeconds == 600);
     CHECK(clamped.config.hotkeySave.display == "Alt+F10");
     CHECK(clamped.warnings.size() >= 3);
+
+    ConfigParseResult lowFps = ParseConfigText("fps=10\nbitrate_mbps=10\nreplay_seconds=5000\n");
+    CHECK(lowFps.config.fps == 15);
+    CHECK(lowFps.config.replaySeconds == 3600);
+
+    ConfigParseResult customFps = ParseConfigText("fps=120\nbitrate_mbps=20\nreplay_seconds=900\n");
+    CHECK(customFps.config.fps == 120);
+    CHECK(customFps.config.replaySeconds == 900);
+    CHECK(customFps.warnings.empty());
+
+    uint32_t parsedSec = 0;
+    CHECK(ParseDurationInput(L"45", false, parsedSec) && parsedSec == 45);
+    CHECK(ParseDurationInput(L"5", true, parsedSec) && parsedSec == 300);
+    CHECK(ParseDurationInput(L"2.5", true, parsedSec) && parsedSec == 150);
+    CHECK(ParseDurationInput(L"15m", false, parsedSec) && parsedSec == 900);
+    CHECK(ParseDurationInput(L"90s", true, parsedSec) && parsedSec == 90);
+    CHECK(ParseDurationInput(L"1:30", true, parsedSec) && parsedSec == 90);
+    CHECK(ParseDurationInput(L"120m", true, parsedSec) && parsedSec == 3600);
+    CHECK(!ParseDurationInput(L"0", true, parsedSec));
+    CHECK(!ParseDurationInput(L"abc", false, parsedSec));
+    CHECK(!ParseDurationInput(L"", false, parsedSec));
+
+    CHECK(FormatReplayLengthShort(45) == L"45s");
+    CHECK(FormatReplayLengthShort(60) == L"1m");
+    CHECK(FormatReplayLengthShort(90) == L"1m 30s");
+    CHECK(FormatReplayLengthShort(900) == L"15m");
 
     HotkeySpec hk;
     CHECK(ParseHotkeyString("ctrl+shift+f9", hk) && hk.display == "Ctrl+Shift+F9" && hk.vk == VK_F9);
@@ -188,13 +214,13 @@ void TestConfig() {
     CHECK(FormatHotkeyFromVk(MOD_ALT, VK_OEM_3, formatted) && formatted.display == "Alt+Backtick");
 
     AppConfig valCfg = MakeDefaultConfig();
-    valCfg.fps = 240;
+    valCfg.fps = 300;
     valCfg.bitrateMbps = 80;
-    valCfg.replaySeconds = 300;
+    valCfg.replaySeconds = 1200;
     std::vector<std::string> valWarns;
     ValidateAppConfig(valCfg, valWarns);
-    CHECK(valCfg.fps == 60);
-    CHECK(valCfg.replaySeconds == 150);
+    CHECK(valCfg.fps == 240);
+    CHECK(valCfg.replaySeconds == 600);
     CHECK(valWarns.size() >= 2);
 
     wchar_t arg0[] = L"clipper.exe";
@@ -912,9 +938,8 @@ void TestEndToEndNvencAacAndSourceReader() {
     while ((!vDone || !aDone) && reads < kMaxReads) {
         reads++;
         DWORD streamIdx = 0, streamFlags = 0;
-        LONGLONG ts = 0;
         ComPtr<IMFSample> sample;
-        HRESULT rhr = reader->ReadSample(static_cast<DWORD>(MF_SOURCE_READER_ANY_STREAM), 0, &streamIdx, &streamFlags, &ts, &sample);
+        HRESULT rhr = reader->ReadSample(static_cast<DWORD>(MF_SOURCE_READER_ANY_STREAM), 0, &streamIdx, &streamFlags, nullptr, &sample);
         CHECK(SUCCEEDED(rhr));
         if (FAILED(rhr)) break;
         if (streamFlags & MF_SOURCE_READERF_ENDOFSTREAM) {

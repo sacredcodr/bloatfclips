@@ -1,10 +1,8 @@
 #pragma once
 
-#include "audio_engine.h"
 #include "clip_library.h"
 #include "config.h"
 #include "recorder_engine.h"
-#include "ui_icons.h"
 #include "video_pipeline.h"
 
 #include <windows.h>
@@ -24,15 +22,12 @@ namespace clipper {
 
 enum class SettingsTab : int {
     Clips = 0,
-    Capture = 1,
-    Audio = 2,
-    Hotkeys = 3
+    Settings = 1
 };
 
 struct SettingsStatusInfo {
     EngineState state = EngineState::Stopped;
     VideoStats video{};
-    AudioStats audio{};
     std::string lastError;
 };
 
@@ -62,29 +57,39 @@ public:
     bool IsOpen() const { return hwnd_ != nullptr; }
     void RefreshStatus();
     void ShowFeedback(const std::wstring& text, bool isError);
-    HWND Handle() const { return hwnd_; }
 
 private:
+    enum class InputMode {
+        None = 0,
+        EditFps,
+        EditReplay,
+        EditBitrate,
+        CaptureHotkey
+    };
+
     enum class HitAction {
         None = 0,
+        WinMinimize,
+        WinClose,
+        TitleSaveClip,
         SelectTab,
-        SidebarSaveClip,
-        SidebarHide,
-        SidebarQuit,
+        RailHide,
+        RailQuit,
         ClipsRefresh,
         ClipsOpenFolder,
         ClipPlay,
         ClipShowInFolder,
         ClipDelete,
-        EmptyGoCapture,
+        EmptyGoSettings,
         RefreshMonitors,
         SelectMonitor,
-        PresetCompetitive,
-        PresetHigh,
-        PresetCompact,
-        SelectFps,
-        SelectSeconds,
+        SelectFpsPreset,
+        EditFpsBox,
+        SelectReplayPreset,
+        EditReplayBox,
+        ToggleReplayUnit,
         BitrateSlider,
+        EditBitrateBox,
         ToggleDesktopAudio,
         ToggleMicAudio,
         ToggleChime,
@@ -131,57 +136,64 @@ private:
     void InvalidateWindow();
 
     void RenderToDC(HDC targetHdc);
-    void DrawSidebar(D2D1_RECT_F clipSidebar);
-    void DrawTopHeader();
+    void DrawMicaBackdrop();
+    void DrawTitleBar();
+    void DrawNavRail();
+    void DrawPageHeader();
     void DrawClipsTab(float contentX, float contentW, float& yCursor);
-    void DrawCaptureTab(float contentX, float contentW, float& yCursor);
-    void DrawAudioTab(float contentX, float contentW, float& yCursor);
-    void DrawHotkeysTab(float contentX, float contentW, float& yCursor);
+    void DrawSettingsTab(float contentX, float contentW, float& yCursor);
     void DrawBottomBar();
 
     void DrawTextLine(std::wstring_view text, IDWriteTextFormat* fmt,
                       D2D1_RECT_F rect, D2D1_COLOR_F color,
                       DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING,
                       DWRITE_PARAGRAPH_ALIGNMENT valign = DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    void DrawPillButton(D2D1_RECT_F rect, const wchar_t* label, const ui::IconId* icon,
-                        HitKey key, bool primary, bool subtleDanger = false);
+    void DrawGlyph(const wchar_t* glyph, float fontSize, D2D1_RECT_F rect, D2D1_COLOR_F color);
+    void DrawFluentSurface(D2D1_RECT_F rect, float radius, bool hovered, bool active = false);
+    void DrawFluentButton(D2D1_RECT_F rect, const wchar_t* label, const wchar_t* glyph,
+                          HitKey key, bool primary, bool subtleDisabled = false, bool inViewport = false);
+    void DrawEditBox(D2D1_RECT_F rect, std::wstring_view displayValue, InputMode mode,
+                     HitKey key, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_CENTER);
     void DrawToggleSwitch(D2D1_RECT_F rect, bool on, bool hovered);
-    float DrawKeycapGroup(float startX, float centerY, const std::string& display,
-                          bool darkStyle, float maxRight = 0.0f);
+    void DrawKeycapGroupRight(float rightX, float centerY, const std::string& display, float minLeft);
 
     const HitTarget* HitTestDip(float dipX, float dipY) const;
     void ExecuteHit(const HitKey& key, float dipX);
+    void EnterInputMode(InputMode nextMode);
+    void CommitOrCancelInput(bool commit, bool showCancelFeedback = false);
+    bool HandleInputChar(wchar_t ch);
+    bool HandleInputKeyDown(UINT vk, LPARAM lParam);
     void UpdateBitrateFromDip(float dipX);
     void BrowseForOutputFolder();
     void OpenFolderInExplorer(const std::wstring& dir);
     void RevealFileInExplorer(const std::wstring& fullPath);
     void DeleteClipToRecycleBin(size_t clipIndex);
-    void BeginHotkeyCapture();
-    void EndHotkeyCapture(bool cancelMsg);
-    bool HandleHotkeyKeyDown(UINT vk, LPARAM lParam);
     bool IsDirty() const;
-    void ComputeRamEstimate(double& outMb, float& outRatio, bool& outOverCap) const;
+    void ComputeRamEstimate(double& outMb, bool& outOverCap, uint32_t& outClampedSecs) const;
 
     SettingsCallbacks callbacks_;
     HWND hwnd_ = nullptr;
     int dpi_ = 96;
     SettingsTab activeTab_ = SettingsTab::Clips;
+    InputMode inputMode_ = InputMode::None;
+    std::wstring editBuffer_;
+    bool replaceOnFirstChar_ = false;
+    bool replayUnitMinutes_ = true;
 
     Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
     Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
     Microsoft::WRL::ComPtr<IWICImagingFactory> wicFactory_;
-    Microsoft::WRL::ComPtr<ID2D1StrokeStyle> roundStroke_;
 
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtBrand_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtPageTitle_;
-    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtSection_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtRowTitle_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtBody_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtBodySemi_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtSmall_;
-    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtSmallWrap_;
-    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtMicro_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtMono_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtKeycap_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtGlyph_;
+    std::wstring glyphFontName_ = L"Segoe Fluent Icons";
 
     Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> rt_;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush_;
@@ -206,7 +218,6 @@ private:
     D2D1_RECT_F sliderTrackRect_{};
     float scrollY_ = 0.0f;
     float maxScroll_ = 0.0f;
-    bool recordingHotkey_ = false;
 
     std::wstring feedbackText_;
     bool feedbackIsError_ = false;
