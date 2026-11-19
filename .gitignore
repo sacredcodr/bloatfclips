@@ -1,0 +1,11 @@
+build/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.mp4
+*.ini
+.vs/
+CMakeUserPresets.json
