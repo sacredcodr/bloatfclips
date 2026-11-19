@@ -29,6 +29,8 @@ constexpr uint32_t kAacFrameSamples = 1024;
 constexpr uint32_t kAacBitrateBps = 192000;
 constexpr int64_t kAacFrameDurUs = 21333;
 constexpr int64_t kLeadMarginUs = 25000;
+constexpr int64_t kMaxStallWaitUs = 65000;
+constexpr int64_t kJumpResetThresholdUs = 2'000'000;
 
 template <size_t CapFrames>
 class StereoFloatFifo {
@@ -434,14 +436,28 @@ void AudioEngine::ThreadMain() {
         return;
     }
 
+    std::vector<uint8_t> parsedAsc;
     Microsoft::WRL::ComPtr<IMFMediaType> actualOut;
     if (SUCCEEDED(mft->GetOutputCurrentType(0, &actualOut))) {
         std::vector<uint8_t> ud(64);
         UINT32 udLen = 0;
         if (SUCCEEDED(actualOut->GetBlob(MF_MT_USER_DATA, ud.data(), static_cast<UINT32>(ud.size()), &udLen))) {
-            std::lock_guard<std::mutex> lock(stateMutex_);
-            asc_ = ExtractAudioSpecificConfigFromMfUserData(ud.data(), udLen);
+            parsedAsc = ExtractAudioSpecificConfigFromMfUserData(ud.data(), udLen);
         }
+    }
+    if (parsedAsc.empty()) {
+        initErr_ = "AAC MFT returned invalid AudioSpecificConfig";
+        initOk_ = false;
+        SetEvent(initDoneEvent_);
+        mft.Reset();
+        MFShutdown();
+        if (mmcssHandle) AvRevertMmThreadCharacteristics(mmcssHandle);
+        CoUninitialize();
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        asc_ = std::move(parsedAsc);
     }
 
     initOk_ = true;
@@ -456,8 +472,9 @@ void AudioEngine::ThreadMain() {
     mft->GetOutputStreamInfo(0, &osi);
     const DWORD outBufSz = std::max<DWORD>(osi.cbSize, 4096);
 
+    int64_t audioBasePtsUs = QpcDeltaToUs(NowQpcTicks() - epochQpc_);
     uint64_t emittedSamples = 0;
-    int64_t nextAacPtsUs = 0;
+    int64_t nextAacPtsUs = audioBasePtsUs;
     std::array<float, kAacFrameSamples * 2> dBlock{};
     std::array<float, kAacFrameSamples * 2> mBlock{};
     std::array<int16_t, kAacFrameSamples * 2> mixPcm{};
@@ -481,17 +498,20 @@ void AudioEngine::ThreadMain() {
                 break;
             }
             Microsoft::WRL::ComPtr<IMFMediaBuffer> locked;
-            outSample->ConvertToContiguousBuffer(&locked);
-            LONGLONG outHns = 0;
-            int64_t actualPtsUs = SUCCEEDED(outSample->GetSampleTime(&outHns)) ? (outHns / 10LL) : pktPtsUs;
-            BYTE* ptr = nullptr;
-            DWORD len = 0;
-            if (SUCCEEDED(locked->Lock(&ptr, nullptr, &len)) && len > 0) {
-                ring_->Push(ptr, len, actualPtsUs, static_cast<uint32_t>(kAacFrameDurUs), true);
-                std::lock_guard<std::mutex> lock(stateMutex_);
-                stats_.aacFramesEncoded++;
+            if (SUCCEEDED(outSample->ConvertToContiguousBuffer(&locked)) && locked) {
+                LONGLONG outHns = 0;
+                int64_t actualPtsUs = SUCCEEDED(outSample->GetSampleTime(&outHns)) ? (outHns / 10LL) : pktPtsUs;
+                BYTE* ptr = nullptr;
+                DWORD len = 0;
+                if (SUCCEEDED(locked->Lock(&ptr, nullptr, &len))) {
+                    if (len > 0) {
+                        ring_->Push(ptr, len, actualPtsUs, static_cast<uint32_t>(kAacFrameDurUs), true);
+                        std::lock_guard<std::mutex> lock(stateMutex_);
+                        stats_.aacFramesEncoded++;
+                    }
+                    locked->Unlock();
+                }
             }
-            if (locked) locked->Unlock();
         }
     };
 
@@ -517,7 +537,24 @@ void AudioEngine::ThreadMain() {
             stats_.micActive = micOn && micSrc.IsOpen();
         }
 
+        if (nowUs - nextAacPtsUs > kJumpResetThresholdUs) {
+            ring_->AdvanceGeneration();
+            desktopFifo.Clear();
+            micFifo.Clear();
+            audioBasePtsUs = nowUs - kLeadMarginUs;
+            emittedSamples = 0;
+            nextAacPtsUs = audioBasePtsUs;
+        }
+
         while (nowUs - kLeadMarginUs >= nextAacPtsUs + kAacFrameDurUs) {
+            bool partialDesktop = cfg_.recordDesktopAudio && desktopSrc.IsOpen() &&
+                desktopFifo.Frames() > 0 && desktopFifo.Frames() < kAacFrameSamples;
+            bool partialMic = cfg_.recordMicAudio && micOn && micSrc.IsOpen() &&
+                micFifo.Frames() > 0 && micFifo.Frames() < kAacFrameSamples;
+            if ((partialDesktop || partialMic) && (nowUs - nextAacPtsUs < kMaxStallWaitUs)) {
+                break;
+            }
+
             dBlock.fill(0.0f);
             mBlock.fill(0.0f);
             if (cfg_.recordDesktopAudio) {
@@ -544,7 +581,8 @@ void AudioEngine::ThreadMain() {
             inBuf->SetCurrentLength(byteLen);
             inSample->AddBuffer(inBuf.Get());
 
-            LONGLONG sampleTimeHns = (static_cast<LONGLONG>(emittedSamples) * 10'000'000LL) / kOutRate;
+            LONGLONG sampleTimeHns = (audioBasePtsUs * 10LL) +
+                (static_cast<LONGLONG>(emittedSamples) * 10'000'000LL) / kOutRate;
             LONGLONG sampleDurHns = (static_cast<LONGLONG>(kAacFrameSamples) * 10'000'000LL) / kOutRate;
             inSample->SetSampleTime(sampleTimeHns);
             inSample->SetSampleDuration(sampleDurHns);
@@ -562,7 +600,7 @@ void AudioEngine::ThreadMain() {
             }
 
             emittedSamples += kAacFrameSamples;
-            nextAacPtsUs = (static_cast<int64_t>(emittedSamples) * 1'000'000LL) / kOutRate;
+            nextAacPtsUs = audioBasePtsUs + (static_cast<int64_t>(emittedSamples) * 1'000'000LL) / kOutRate;
         }
     }
 

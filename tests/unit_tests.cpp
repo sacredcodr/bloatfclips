@@ -1,6 +1,10 @@
+#include "audio_engine.h"
+#include "clock.h"
 #include "config.h"
 #include "mp4_muxer.h"
+#include "recorder_engine.h"
 #include "ring_buffer.h"
+#include "video_pipeline.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -89,7 +93,8 @@ bool FindBoxRecursive(const uint8_t* buf, size_t len, const char type[4], size_t
         const char* cc = reinterpret_cast<const char*>(buf + pos + 4);
         bool isContainer = std::memcmp(cc, "moov", 4) == 0 || std::memcmp(cc, "trak", 4) == 0 ||
                            std::memcmp(cc, "mdia", 4) == 0 || std::memcmp(cc, "minf", 4) == 0 ||
-                           std::memcmp(cc, "stbl", 4) == 0 || std::memcmp(cc, "dinf", 4) == 0;
+                           std::memcmp(cc, "stbl", 4) == 0 || std::memcmp(cc, "dinf", 4) == 0 ||
+                           std::memcmp(cc, "edts", 4) == 0;
         if (isContainer) {
             size_t subOff = 0, subLen = 0;
             if (FindBoxRecursive(buf + pos + hdr, static_cast<size_t>(boxSz - hdr), type, subOff, subLen)) {
@@ -109,6 +114,15 @@ bool FindBoxRecursive(const uint8_t* buf, size_t len, const char type[4], size_t
         }
         if (std::memcmp(cc, "avc1", 4) == 0 && boxSz > 86) {
             size_t subStart = pos + hdr + 78;
+            size_t subOff = 0, subLen = 0;
+            if (FindBoxRecursive(buf + subStart, pos + static_cast<size_t>(boxSz) - subStart, type, subOff, subLen)) {
+                outBodyOff = subStart + subOff;
+                outBodyLen = subLen;
+                return true;
+            }
+        }
+        if (std::memcmp(cc, "mp4a", 4) == 0 && boxSz > 36) {
+            size_t subStart = pos + hdr + 28;
             size_t subOff = 0, subLen = 0;
             if (FindBoxRecursive(buf + subStart, pos + static_cast<size_t>(boxSz) - subStart, type, subOff, subLen)) {
                 outBodyOff = subStart + subOff;
@@ -269,6 +283,7 @@ void TestRingBuffer() {
                             break;
                         }
                     }
+                    CHECK(p.size >= 2);
                 }
                 snapshotsChecked++;
             }
@@ -276,6 +291,29 @@ void TestRingBuffer() {
         }
         writer.join();
         CHECK(snapshotsChecked >= 50);
+    }
+
+    {
+        PacketRingBuffer arb(2048, 32);
+        const uint8_t dOld[] = { 1, 2, 3, 4 };
+        const uint8_t dA[] = { 5, 6, 7 };
+        const uint8_t dOut[] = { 8, 9, 10, 11, 12 };
+        const uint8_t dB[] = { 13, 14, 15, 16 };
+        arb.Push(dOld, sizeof(dOld), 100'000, 21333, true);
+        arb.AdvanceGeneration();
+        arb.Push(dA, sizeof(dA), 85'000, 21333, true);
+        arb.Push(dOut, sizeof(dOut), 1'500'000, 21333, true);
+        arb.Push(dB, sizeof(dB), 106'333, 21333, true);
+
+        ClipStreamSnapshot s = arb.SnapshotAudioRange(100'000, 200'000);
+        CHECK(s.generation == 2);
+        CHECK(s.packets.size() == 2);
+        CHECK(s.bytes.size() == sizeof(dA) + sizeof(dB));
+        CHECK(s.packets[0].ptsUs == 85'000 && s.packets[1].ptsUs == 106'333);
+
+        arb.Clear();
+        CHECK(arb.PacketCount() == 0);
+        CHECK(arb.UsedPayloadBytes() == 0);
     }
 
     std::printf("PASS TestRingBuffer\n");
@@ -366,6 +404,46 @@ void TestMp4StructureAndCo64() {
     auto asc = ExtractAudioSpecificConfigFromMfUserData(fakeUserData, sizeof(fakeUserData));
     CHECK(asc.size() == 2 && asc[0] == 0x11 && asc[1] == 0x90);
 
+    uint8_t badUserData[14] = { 1, 0, 0x29, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x11, 0x90 };
+    CHECK(ExtractAudioSpecificConfigFromMfUserData(nullptr, 0).empty());
+    CHECK(ExtractAudioSpecificConfigFromMfUserData(fakeUserData, 10).empty());
+    CHECK(ExtractAudioSpecificConfigFromMfUserData(badUserData, sizeof(badUserData)).empty());
+
+    size_t trak1Off = 0, trak1Len = 0, trak2Off = 0, trak2Len = 0;
+    CHECK(FindBox(mp4.data() + moovOff, moovLen, "trak", trak1Off, trak1Len));
+    size_t scan = 0;
+    int trakSeen = 0;
+    while (scan + 8 <= moovLen) {
+        uint32_t bsz = ReadBE32(mp4.data() + moovOff + scan);
+        if (bsz < 8 || scan + bsz > moovLen) break;
+        if (std::memcmp(mp4.data() + moovOff + scan + 4, "trak", 4) == 0) {
+            trakSeen++;
+            if (trakSeen == 2) {
+                trak2Off = scan + 8;
+                trak2Len = bsz - 8;
+            }
+        }
+        scan += bsz;
+    }
+    CHECK(trakSeen == 2);
+    size_t mp4aOff = 0, mp4aLen = 0, esdsOff = 0, esdsLen = 0, aStszOff = 0, aStszLen = 0;
+    CHECK(FindBoxRecursive(mp4.data() + moovOff + trak2Off, trak2Len, "mp4a", mp4aOff, mp4aLen));
+    CHECK(FindBoxRecursive(mp4.data() + moovOff + trak2Off, trak2Len, "esds", esdsOff, esdsLen));
+    CHECK(FindBoxRecursive(mp4.data() + moovOff + trak2Off, trak2Len, "stsz", aStszOff, aStszLen));
+    CHECK(ReadBE32(mp4.data() + moovOff + trak2Off + aStszOff + 8) == 70);
+
+    {
+        Mp4MuxInput delayed = in;
+        for (auto& ap : delayed.audio.packets) ap.ptsUs += 30'000;
+        std::vector<uint8_t> dmp4;
+        std::string derr;
+        CHECK(BuildMp4Bytes(delayed, dmp4, derr));
+        size_t dmOff = 0, dmLen = 0, elstOff = 0, elstLen = 0;
+        CHECK(FindBox(dmp4.data(), dmp4.size(), "moov", dmOff, dmLen));
+        CHECK(FindBoxRecursive(dmp4.data() + dmOff, dmLen, "elst", elstOff, elstLen));
+        CHECK(ReadBE32(dmp4.data() + dmOff + elstOff + 4) == 2);
+    }
+
     std::vector<uint64_t> hugeChunks = { 2ULL << 30, 2ULL << 30, 1ULL << 30 };
     MdatOffsetPlan plan = ComputeMdatOffsetPlan(32, 500, 512, hugeChunks);
     CHECK(plan.useCo64);
@@ -375,6 +453,45 @@ void TestMp4StructureAndCo64() {
     CHECK(plan.chunkFileOffsets[2] > 0xFFFFFFFFULL);
 
     std::printf("PASS TestMp4StructureAndCo64\n");
+}
+
+void TestRecorderComponentsAndLifecycle() {
+    AppConfig cfg = MakeDefaultConfig();
+    RecorderEngine eng(cfg);
+    CHECK(eng.State() == EngineState::Stopped);
+    SaveResult stoppedSave = eng.SaveClipSync(L"build\\test_out\\should_not_exist.mp4");
+    CHECK(!stoppedSave.ok && !stoppedSave.error.empty());
+    eng.Stop();
+    CHECK(eng.State() == EngineState::Stopped);
+
+    AppConfig badMonitor = cfg;
+    badMonitor.monitorIndex = 99;
+    PacketRingBuffer vRing(4 * 1024 * 1024, 64);
+    VideoPipeline vp;
+    std::string vErr;
+    CHECK(!vp.Start(badMonitor, NowQpcTicks(), vRing, vErr));
+    CHECK(!vErr.empty());
+    vp.Stop();
+
+    PacketRingBuffer aRing(2 * 1024 * 1024, 256);
+    AudioEngine ae;
+    std::string aErr;
+    if (ae.Start(cfg, NowQpcTicks(), aRing, aErr)) {
+        Sleep(250);
+        ae.SetMicEnabled(false);
+        CHECK(!ae.IsMicEnabled());
+        ae.Stop();
+        auto asc = ae.AudioSpecificConfig();
+        auto ast = ae.Stats();
+        CHECK(asc.size() == 2);
+        CHECK(ast.aacFramesEncoded >= 6);
+        CHECK(ast.errors == 0);
+        CHECK(aRing.PacketCount() >= 6);
+    } else {
+        std::printf("AudioEngine skipped in environment: %s\n", aErr.c_str());
+    }
+
+    std::printf("PASS TestRecorderComponentsAndLifecycle\n");
 }
 
 void TestEndToEndNvencAacAndSourceReader() {
@@ -816,6 +933,7 @@ int main() {
     TestConfig();
     TestRingBuffer();
     TestMp4StructureAndCo64();
+    TestRecorderComponentsAndLifecycle();
     TestEndToEndNvencAacAndSourceReader();
 
     MFShutdown();

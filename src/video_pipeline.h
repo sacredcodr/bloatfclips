@@ -54,6 +54,7 @@ private:
         Microsoft::WRL::ComPtr<ID3D11Texture2D> nv12Tex;
         Microsoft::WRL::ComPtr<ID3D11VideoProcessorOutputView> vpOut;
         NV_ENC_REGISTERED_PTR registeredRes = nullptr;
+        NV_ENC_INPUT_PTR mappedRes = nullptr;
         NV_ENC_OUTPUT_PTR bitstream = nullptr;
         HANDLE eventHandle = nullptr;
         bool inFlight = false;
@@ -66,8 +67,9 @@ private:
     bool CreateDuplication(UINT& outWidth, UINT& outHeight, HRESULT& outHr);
     bool InitVideoProcessorAndTextures(UINT width, UINT height, std::string& errOut);
     bool InitNvenc(UINT width, UINT height, std::string& errOut);
-    bool RetireSlot(int idx);
+    bool RetireSlot(int idx, bool draining);
     void DrainAllSlots();
+    bool RecoverCapture(HRESULT ddaHr, bool forceFullReset, bool& forceNextIdr, int64_t& paceStartUs, uint64_t& paceTick);
     void DestroyNvencAndTextures();
     void DestroyAllResources();
     void RebindInputDesktop();
@@ -82,7 +84,11 @@ private:
     std::string initErr_;
     std::thread thread_;
 
+    HDESK initialDesktop_ = nullptr;
     HDESK ownedDesktop_ = nullptr;
+    uint32_t encFrameIdx_ = 0;
+    bool encoderInitialized_ = false;
+    bool eosSent_ = false;
     Microsoft::WRL::ComPtr<ID3D11Device> dev_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> ctx_;
     Microsoft::WRL::ComPtr<ID3D11VideoDevice> videoDev_;

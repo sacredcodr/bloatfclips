@@ -18,12 +18,14 @@ RecorderEngine::~RecorderEngine() {
 }
 
 bool RecorderEngine::Start(std::string& errOut) {
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
     EngineState cur = state_.load(std::memory_order_acquire);
     if (cur != EngineState::Stopped && cur != EngineState::Faulted) {
         errOut = "engine already active";
         return false;
     }
 
+    stoppingWait_.store(false, std::memory_order_release);
     state_.store(EngineState::Starting, std::memory_order_release);
     videoRing_.Clear();
     audioRing_.Clear();
@@ -60,6 +62,7 @@ bool RecorderEngine::Start(std::string& errOut) {
 }
 
 void RecorderEngine::Stop() {
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
     EngineState cur = state_.load(std::memory_order_acquire);
     if (cur == EngineState::Stopped) return;
     if (cur == EngineState::Faulted) {
@@ -68,22 +71,25 @@ void RecorderEngine::Stop() {
     }
 
     state_.store(EngineState::Stopping, std::memory_order_release);
+    stoppingWait_.store(true, std::memory_order_release);
+    videoRing_.NotifyAll();
+    audioRing_.NotifyAll();
     if (stopEvent_) SetEvent(stopEvent_);
     if (saverThread_.joinable()) saverThread_.join();
-    if (stopEvent_) {
-        CloseHandle(stopEvent_);
-        stopEvent_ = nullptr;
-    }
-    if (saveEvent_) {
-        CloseHandle(saveEvent_);
-        saveEvent_ = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(saveMutex_);
+        if (stopEvent_) {
+            CloseHandle(stopEvent_);
+            stopEvent_ = nullptr;
+        }
+        if (saveEvent_) {
+            CloseHandle(saveEvent_);
+            saveEvent_ = nullptr;
+        }
+        pendingSaves_.clear();
     }
     audio_.Stop();
     video_.Stop();
-    {
-        std::lock_guard<std::mutex> lock(saveMutex_);
-        pendingSaves_.clear();
-    }
     state_.store(EngineState::Stopped, std::memory_order_release);
 }
 
@@ -96,16 +102,20 @@ EngineState RecorderEngine::State() const {
 }
 
 void RecorderEngine::RequestSaveClip(const std::wstring& customPath) {
-    if (state_.load(std::memory_order_acquire) != EngineState::Running) return;
+    std::lock_guard<std::mutex> lock(saveMutex_);
+    if (state_.load(std::memory_order_acquire) != EngineState::Running || !saveEvent_) return;
     int64_t ptsUs = QpcDeltaToUs(NowQpcTicks() - epochQpc_);
-    {
-        std::lock_guard<std::mutex> lock(saveMutex_);
-        pendingSaves_.push_back(PendingSave{ ptsUs, customPath });
-    }
-    if (saveEvent_) SetEvent(saveEvent_);
+    pendingSaves_.push_back(PendingSave{ ptsUs, customPath });
+    SetEvent(saveEvent_);
 }
 
 SaveResult RecorderEngine::SaveClipSync(const std::wstring& customPath) {
+    EngineState st = state_.load(std::memory_order_acquire);
+    if (st != EngineState::Running && st != EngineState::Recovering) {
+        SaveResult res;
+        res.error = "engine is not running";
+        return res;
+    }
     int64_t reqPtsUs = QpcDeltaToUs(NowQpcTicks() - epochQpc_);
     return ExecuteSave(reqPtsUs, customPath);
 }
@@ -135,10 +145,9 @@ std::wstring RecorderEngine::MakeDefaultClipPath() const {
 
 SaveResult RecorderEngine::ExecuteSave(int64_t requestPtsUs, const std::wstring& customPath) {
     SaveResult res;
-    if (stopEvent_) {
-        WaitForSingleObject(stopEvent_, 50);
-    } else {
-        Sleep(50);
+    videoRing_.WaitForPts(requestPtsUs, stoppingWait_, 60);
+    if (cfg_.recordDesktopAudio || cfg_.recordMicAudio) {
+        audioRing_.WaitForPts(requestPtsUs - 25000, stoppingWait_, 45);
     }
 
     int64_t t0 = NowQpcTicks();

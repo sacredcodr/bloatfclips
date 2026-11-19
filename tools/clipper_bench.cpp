@@ -143,6 +143,14 @@ bool VerifyMp4WithSourceReader(const std::wstring& path, uint32_t expectedW, uin
     }
 
     std::printf("Verify MP4: dur=%.3fs videoFrames=%d pcmBytes=%zu\n", durSec, videoFrames, pcmBytes);
+    if (reads >= 50000) {
+        std::printf("Verify FAIL: hit read limit (%d)\n", reads);
+        return false;
+    }
+    if (durSec < 0.5) {
+        std::printf("Verify FAIL: container duration too short (%.3fs)\n", durSec);
+        return false;
+    }
     if (videoFrames < minVideoFrames) {
         std::printf("Verify FAIL: videoFrames %d < %d\n", videoFrames, minVideoFrames);
         return false;
@@ -155,7 +163,9 @@ bool VerifyMp4WithSourceReader(const std::wstring& path, uint32_t expectedW, uin
 }
 
 int RunSelfTestClip(int seconds, const std::wstring& outPath, AppConfig cfg) {
-    cfg.replaySeconds = static_cast<uint32_t>(std::max(10, seconds + 5));
+    uint32_t maxForBudget = 12000u / std::max<uint32_t>(1u, cfg.bitrateMbps);
+    uint32_t desired = static_cast<uint32_t>(std::max(5, seconds + 5));
+    cfg.replaySeconds = std::clamp<uint32_t>(desired, 5u, std::max<uint32_t>(5u, maxForBudget));
     cfg.saveChime = false;
 
     RecorderEngine engine(cfg);
@@ -212,6 +222,15 @@ int RunSelfTestClip(int seconds, const std::wstring& outPath, AppConfig cfg) {
 
 class Gpu3dWorkload {
 public:
+    ~Gpu3dWorkload() {
+        if (swapChain_) swapChain_->SetFullscreenState(FALSE, nullptr);
+        swapChain_.Reset();
+        if (hwnd_) {
+            DestroyWindow(hwnd_);
+            hwnd_ = nullptr;
+        }
+    }
+
     bool Init() {
         ComPtr<IDXGIFactory6> factory;
         if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return false;
@@ -231,6 +250,38 @@ public:
                 nullptr, 0, &fl, 1, D3D11_SDK_VERSION, &dev_, nullptr, &ctx_))) {
             return false;
         }
+
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"ClipperBenchGpuWnd";
+        RegisterClassExW(&wc);
+
+        hwnd_ = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, L"ClipperBenchGpuWnd", L"ClipperBenchGPU",
+            WS_POPUP | WS_VISIBLE, 16, 16, 640, 360, nullptr, nullptr, wc.hInstance, nullptr);
+        if (!hwnd_) return false;
+
+        BOOL tearing = FALSE;
+        ComPtr<IDXGIFactory5> f5;
+        if (SUCCEEDED(factory.As(&f5))) {
+            f5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof(tearing));
+        }
+        allowTearing_ = (tearing == TRUE);
+
+        DXGI_SWAP_CHAIN_DESC1 scd{};
+        scd.Width = 640;
+        scd.Height = 360;
+        scd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        scd.SampleDesc.Count = 1;
+        scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        scd.BufferCount = 2;
+        scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        scd.Flags = allowTearing_ ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+        if (FAILED(factory->CreateSwapChainForHwnd(dev_.Get(), hwnd_, &scd, nullptr, nullptr, &swapChain_))) {
+            return false;
+        }
+        factory->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER);
 
         static const char kVsSrc[] =
             "struct VOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };\n"
@@ -352,10 +403,25 @@ public:
 
             ctx_->Begin(qPool_[idx].disjoint.Get());
             ctx_->End(qPool_[idx].tsStart.Get());
+            ctx_->OMSetRenderTargets(1, rtvs, nullptr);
             ctx_->Draw(3, 0);
             ctx_->End(qPool_[idx].tsEnd.Get());
             ctx_->End(qPool_[idx].disjoint.Get());
             qPool_[idx].active = true;
+
+            ComPtr<ID3D11Texture2D> backBuf;
+            if (SUCCEEDED(swapChain_->GetBuffer(0, IID_PPV_ARGS(&backBuf)))) {
+                D3D11_BOX copyBox{ 0, 0, 0, 640, 360, 1 };
+                ctx_->CopySubresourceRegion(backBuf.Get(), 0, 0, 0, 0, rt_.Get(), 0, &copyBox);
+            }
+            swapChain_->Present(0, allowTearing_ ? DXGI_PRESENT_ALLOW_TEARING : 0);
+
+            MSG msg{};
+            while (PeekMessageW(&msg, hwnd_, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+
             m.framesRendered++;
             frame++;
         }
@@ -380,6 +446,9 @@ private:
         ComPtr<ID3D11Query> tsEnd;
         bool active = false;
     };
+    HWND hwnd_ = nullptr;
+    bool allowTearing_ = false;
+    ComPtr<IDXGISwapChain1> swapChain_;
     ComPtr<ID3D11Device> dev_;
     ComPtr<ID3D11DeviceContext> ctx_;
     ComPtr<ID3D11VertexShader> vs_;
@@ -390,6 +459,28 @@ private:
     ComPtr<ID3D11Texture2D> staging_;
     QuerySlot qPool_[kQueryPool];
 };
+
+HWND FindWindowForPid(DWORD targetPid, const wchar_t* className) {
+    struct SearchCtx {
+        DWORD pid;
+        const wchar_t* cls;
+        HWND found = nullptr;
+    } s{ targetPid, className, nullptr };
+
+    EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
+        auto* ctx = reinterpret_cast<SearchCtx*>(lp);
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (pid != ctx->pid) return TRUE;
+        wchar_t clsBuf[128] = {};
+        if (GetClassNameW(hwnd, clsBuf, 128) > 0 && wcscmp(clsBuf, ctx->cls) == 0) {
+            ctx->found = hwnd;
+            return FALSE;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&s));
+    return s.found;
+}
 
 int RunGpuLoadBench(int secondsPerRun, int runsPerSide) {
     wchar_t exePath[MAX_PATH] = {};
@@ -436,19 +527,30 @@ int RunGpuLoadBench(int secondsPerRun, int runsPerSide) {
         for (int side = 0; side < 2; ++side) {
             bool isOn = (side == 1);
             PROCESS_INFORMATION pi{};
+            HANDLE hReady = nullptr;
             if (isOn) {
-                std::wstring cmd = L"\"" + clipperExe.wstring() + L"\" --fail-fast --seconds=15 --fps=60 --bitrate=20 --no-chime";
+                wchar_t readyName[96] = {};
+                std::swprintf(readyName, sizeof(readyName) / sizeof(wchar_t),
+                    L"Local\\ClipperBenchReady_%lu_%d", GetCurrentProcessId(), r);
+                hReady = CreateEventW(nullptr, TRUE, FALSE, readyName);
+                std::wstring cmd = L"\"" + clipperExe.wstring() +
+                    L"\" --fail-fast --seconds=15 --fps=60 --bitrate=20 --no-chime --ready-event=" + readyName;
                 STARTUPINFOW startup{};
                 startup.cb = sizeof(startup);
                 if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &pi)) {
                     std::printf("Bench FAIL: CreateProcessW clipper.exe err=%lu\n", GetLastError());
+                    if (hReady) CloseHandle(hReady);
                     return 1;
                 }
-                WaitForInputIdle(pi.hProcess, 3000);
-                Sleep(600);
-                DWORD exitCode = 0;
-                if (GetExitCodeProcess(pi.hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
-                    std::printf("Bench FAIL: clipper.exe exited early (code=%lu) — capture failed to start\n", exitCode);
+                HANDLE waitHandles[2] = { hReady, pi.hProcess };
+                bool hadReady = (hReady != nullptr);
+                DWORD wr = WaitForMultipleObjects(hadReady ? 2 : 1, hadReady ? waitHandles : &pi.hProcess, FALSE, 5000);
+                if (hReady) { CloseHandle(hReady); hReady = nullptr; }
+                if (!hadReady || wr != WAIT_OBJECT_0) {
+                    DWORD exitCode = 0;
+                    GetExitCodeProcess(pi.hProcess, &exitCode);
+                    std::printf("Bench FAIL: clipper.exe failed readiness wait (wr=%lu code=%lu)\n", wr, exitCode);
+                    TerminateProcess(pi.hProcess, 1);
                     CloseHandle(pi.hThread);
                     CloseHandle(pi.hProcess);
                     return 1;
@@ -480,10 +582,15 @@ int RunGpuLoadBench(int secondsPerRun, int runsPerSide) {
                 cpuPct = (procUs / wallUs) * 100.0 / static_cast<double>(si.dwNumberOfProcessors);
                 diskWrites = io1.WriteTransferCount - io0.WriteTransferCount;
 
-                HWND cw = FindWindowW(L"ClipperTrayHiddenWindow", L"Clipper");
+                HWND cw = FindWindowForPid(pi.dwProcessId, L"ClipperTrayHiddenWindow");
                 if (cw) PostMessageW(cw, WM_CLOSE, 0, 0);
-                if (WaitForSingleObject(pi.hProcess, 4000) != WAIT_OBJECT_0) {
-                    TerminateProcess(pi.hProcess, 0);
+                DWORD stopWr = WaitForSingleObject(pi.hProcess, 4000);
+                if (stopWr != WAIT_OBJECT_0) {
+                    std::printf("\nBench FAIL: child clipper.exe pid=%lu did not exit cleanly\n", pi.dwProcessId);
+                    TerminateProcess(pi.hProcess, 1);
+                    CloseHandle(pi.hThread);
+                    CloseHandle(pi.hProcess);
+                    return 1;
                 }
                 CloseHandle(pi.hThread);
                 CloseHandle(pi.hProcess);

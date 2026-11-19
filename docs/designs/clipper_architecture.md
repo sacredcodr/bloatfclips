@@ -17,7 +17,7 @@ Clipper is a single-binary native C++20 Windows instant-replay recorder (`clippe
 ### Enums and State Machine
 
 - `EngineState`: `Stopped`, `Starting`, `Running`, `Recovering`, `Stopping`, `Faulted`.
-  - Transitions: `Stopped -> Starting -> Running`, `Running -> Recovering -> Running`, any active state `-> Stopping -> Stopped`, `Starting / Recovering -> Faulted -> Stopped`.
+  - Transitions: `Stopped -> Starting -> Running`, `Faulted -> Starting -> Running`, `Running -> Recovering -> Running` (`Recovering` reported via `State()` when `video_.Stats().recovering` is active), any active state `-> Stopping -> Stopped`, `Starting -> Faulted -> Stopped`.
 
 ### `AppConfig` (Parsed Once at Boundary)
 
@@ -25,7 +25,7 @@ Parsed at startup from `clipper.ini` and optional CLI flags, with validation con
 
 | Field | Default | Allowed Range / Values | Notes |
 | --- | --- | --- | --- |
-| `monitor_index` | `0` | `0..N-1` | DXGI output index |
+| `monitor_index` | `0` | `0..N-1` | Index among attached NVIDIA DXGI outputs (falls back to all attached outputs if none) |
 | `fps` | `60` | `30..60` | Capture and encode target rate |
 | `bitrate_mbps` | `20` | `2..80` | VBR target (`max = 1.35 * target`) |
 | `replay_seconds` | `60` | `5..300` | Rolling retention window |
@@ -58,34 +58,34 @@ Invariants:
    - Sole owner of `ID3D11Device`, `ID3D11DeviceContext`, `ID3D11VideoDevice` / `ID3D11VideoProcessor`, `IDXGIOutputDuplication`, 4-slot registered NVENC `ID3D11Texture2D` pool, NVENC `13.1` session, and sole writer to `videoRing_`.
    - Re-arms `CreateWaitableTimerExW(..., CREATE_WAITABLE_TIMER_HIGH_RESOLUTION)` using absolute 100-ns deadlines anchored to session epoch `t0`.
    - On `DXGI_ERROR_WAIT_TIMEOUT`, re-submits the most recently captured retired frame slot to preserve constant-FPS pacing.
-   - **Slot Synchronization:** Before `VideoProcessorBlt` overwrites `pool[slot]`, waits on `encodeEvent[slot]` (or `stopEvent_`), locks and appends bitstream packet to `videoRing_` (`isKeyFrame = (pictureType == NV_ENC_PIC_TYPE_IDR)`), unlocks bitstream, and unmaps `pool[slot]`.
-   - **Desktop and Device Recovery:** On `E_ACCESSDENIED` / `DXGI_ERROR_ACCESS_LOST`, rebinds thread desktop via `OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP | GENERIC_READ)` (fallback `MAXIMUM_ALLOWED`), closing the prior `HDESK` only after `SetThreadDesktop` succeeds, and retries `DuplicateOutput1(BGRA8)` on backoff (`100..1000 ms`). On resolution/format change (`DXGI_OUTDUPL_DESC::ModeDesc`) or `DXGI_ERROR_DEVICE_REMOVED`, drains in-flight NVENC slots, increments generation (`AdvanceGeneration()`), and recreates D3D11/VP/NVENC resources.
+   - **Slot Synchronization:** Each `EncodeSlot` retains its mapped `NV_ENC_INPUT_PTR` across `nvEncEncodePicture`. Before `VideoProcessorBlt` overwrites `pool[slot]`, waits on `encodeEvent[slot]` (or `stopEvent_`), locks and appends bitstream packet to `videoRing_` (`isKeyFrame = (pictureType == NV_ENC_PIC_TYPE_IDR)`), unlocks bitstream, and unmaps `pool[slot]` afterward. Recovery and shutdown drain all in-flight slots in FIFO submission order and issue async `NV_ENC_PIC_FLAG_EOS` once per encoder session.
+   - **Desktop and Device Recovery:** On `E_ACCESSDENIED` / `DXGI_ERROR_ACCESS_LOST`, rebinds thread desktop via `OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP | GENERIC_READ)` (fallback `MAXIMUM_ALLOWED`), closing the prior `HDESK` only after `SetThreadDesktop` succeeds (restoring initial thread desktop on teardown before closing `ownedDesktop_`), and retries `DuplicateOutput1(BGRA8)` on backoff (`100..1000 ms`). On resolution/format change (`DXGI_OUTDUPL_DESC::ModeDesc`), `VideoProcessorBlt` device loss, or `DXGI_ERROR_DEVICE_REMOVED`, drains in-flight NVENC slots, increments generation (`AdvanceGeneration()`), and recreates D3D11/VP/NVENC resources with checked backoff recovery.
 2. **Audio Capture + Mix Thread (`AvSetMmThreadCharacteristicsW(L"Pro Audio", ...)`):**
-   - Sole owner of WASAPI render loopback client, optional WASAPI capture mic client, `48000 Hz` stereo float mixer (`[-1.0f, 1.0f]` clamp + carried resampling phase), `1024`-sample QPC-paced FIFO, and single Media Foundation AAC-LC MFT (`48000 Hz`, `2 ch`, `192 kbps`, `MF_MT_AAC_PAYLOAD_TYPE = 0`).
-   - Handles `AUDCLNT_BUFFERFLAGS_SILENT` and `AUDCLNT_E_DEVICE_INVALIDATED` reopen cleanly. Maintains a `25 ms` lead margin behind real-time and trims/zero-pads exact PCM samples only when drift exceeds `25 ms`, keeping AAC sample time locked to QPC without runaway silence injection.
+   - Sole owner of WASAPI render loopback client, optional WASAPI capture mic client, `48000 Hz` stereo float mixer (`[-1.0f, 1.0f]` clamp + carried resampling phase), `1024`-sample QPC-paced FIFO anchored to loop start QPC, and single Media Foundation AAC-LC MFT (`48000 Hz`, `2 ch`, `192 kbps`, `MF_MT_AAC_PAYLOAD_TYPE = 0`).
+   - Handles `AUDCLNT_BUFFERFLAGS_SILENT` and `AUDCLNT_E_DEVICE_INVALIDATED` reopen cleanly. Maintains a `25 ms` lead margin behind real-time, waits up to `65 ms` when an active stream has a partial `< 1024` frame before padding silence, trims FIFO backlogs above `80 ms` (`3840` frames) down to `30 ms` (`1440` frames), and resets + bumps generation on jumps > `2 s`.
 3. **Clip Saver Thread:**
-   - Woken by manual hotkey/menu save trigger (latching `saveRequestPtsUs`). Snapshots video and audio rings sequentially, muxes fast-start `.mp4` to a `.tmp` sibling path via `WriteMp4File` (`FILE_FLAG_SEQUENTIAL_SCAN`), atomically renames via `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)`, and calls `MessageBeep(MB_OK)` when `save_chime` is enabled.
+   - Woken by manual hotkey/menu save trigger (latching `saveRequestPtsUs`). Waits on `PacketRingBuffer::WaitForPts` watermark rather than fixed sleep, snapshots video and audio rings sequentially, muxes fast-start `.mp4` to a `.tmp` sibling path via `WriteMp4File` (`FILE_FLAG_SEQUENTIAL_SCAN`), atomically renames via `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)`, and calls `MessageBeep(MB_OK)` when `save_chime` is enabled.
 4. **Main Thread (Win32 Tray Daemon):**
-   - Message-only window (`HWND_MESSAGE`) owning `Shell_NotifyIconW`, `RegisterHotKey` (reporting collision via tray balloon), and popup menu (`Save Replay`, `Mic: On/Off`, `Open Clips Folder`, `Exit`).
+   - Hidden top-level `WS_OVERLAPPED` window (`ClipperTrayHiddenWindow`, chosen over `HWND_MESSAGE` so Windows delivers `TaskbarCreated` broadcasts) owning `Shell_NotifyIconW`, `RegisterHotKey` (reporting collision via tray balloon), and popup menu (`Save Replay`, `Mic: On/Off`, `Open Clips Folder`, `Exit`). Accepts `--fail-fast` and `--ready-event=<name>` for harness orchestration.
 5. **Shutdown Sequence:**
-   - Signal `stopEvent_`, join capture, audio, and saver threads to idle (`Stopping -> Stopped`), drain NVENC `NV_ENC_PIC_FLAG_EOS`, and free rings.
+   - Signal shutdown flags/events under lifecycle mutex, join saver, audio, and video threads (`Stopping -> Stopped`), drain async NVENC slots in FIFO order + `NV_ENC_PIC_FLAG_EOS`, and free rings.
 
 ## Zero-3D-Core NVENC and Color Pipeline Invariants
 
 - Hardware color conversion via `ID3D11VideoProcessor` (`DXGI_FORMAT_B8G8R8A8_UNORM` Full Range -> `DXGI_FORMAT_NV12` BT.709 Studio) feeding `NV_ENC_BUFFER_FORMAT_NV12`.
 - `NV_ENC_PRESET_P4_GUID`, `NV_ENC_TUNING_INFO_LOW_LATENCY`, `NV_ENC_MULTI_PASS_DISABLED`, `enableLookahead = 0`, `enableAQ = 0`, `enableTemporalAQ = 0`, `frameIntervalP = 1`, `zeroReorderDelay = 1`, `enableEncodeAsync = 1`.
-- H.264 specific: `h264Config.idrPeriod = fps`, `h264Config.repeatSPSPPS = 1`, `rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR`, `vbvBufferSize = maxBitRate / fps * 2`, BT.709 VUI color flags.
+- H.264 specific: `h264Config.idrPeriod = fps`, `h264Config.repeatSPSPPS = 1`, `rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR`, `vbvBufferSize = maxBitRate / 2` (0.5 s low-latency VBR headroom), BT.709 VUI color flags.
 
 ## Fast-Start H.264 + AAC ISOBMFF Muxer
 
 - Produces `ftyp -> moov -> mdat` with **1-second time-interleaved chunks** across video and audio tracks for fast scrubbing and web playback.
 - Parses H.264 Annex-B (`00 00 00 01` / `00 00 01`), extracts SPS (`7`) and PPS (`8`) into `avcC` (including the 4-byte High-profile suffix for `profile_idc` in `{44, 83, 86, 100, 110, 118, 122, 128, 134, 138, 139, 144, 244}`), strips inline NAL types `7/8/9` from all `mdat` samples, and emits 4-byte length prefixes (`avc1`) plus `colr` (`nclx` BT.709).
-- Writes `mp4a`/`esds` from validated MF AAC `MF_MT_USER_DATA` (`>= 14` bytes with `wPayloadType == 0`, stripping 12-byte `HEAACWAVEINFO`; fallback `{0x11, 0x90}`).
-- Computes cumulative video `stts` ticks (`llround((pts - pts0) * 90000.0 / 1e6)` delta) and fixed `1024`-sample `48000 Hz` audio `stts`. Selects `co64` and 16-byte `mdat` `largesize` before finalizing `moov` whenever file/mdat offsets exceed 4 GiB.
+- Writes `mp4a`/`esds` from validated MF AAC `MF_MT_USER_DATA` (`>= 14` bytes with `wPayloadType == 0 && wStructType == 0`, stripping 12-byte `HEAACWAVEINFO`; returns empty on malformed data) and synthesizes MPEG-4 AAC-LC ASC from `(audioSampleRate, audioChannels)` when omitted in `Mp4MuxInput`. Emits `edts`/`elst` on the audio track when A/V start offset is `>= 1 ms`.
+- Computes cumulative video `stts` ticks (`llround((pts - pts0) * 90000.0 / 1e6)` delta) and fixed `1024`-sample `audioSampleRate` audio `stts`. Selects `co64` and 16-byte `mdat` `largesize` before finalizing `moov` whenever file/mdat offsets exceed 4 GiB.
 
 ## Binary Layout and Verification
 
 - `clipper_core`: static library containing `config`, `ring_buffer`, `mp4_muxer`, and pipeline modules.
 - `clipper.exe`: minimal background tray daemon (no `IMFSourceReader` or test code).
-- `clipper_tests.exe`: unit tests (`Config`, `PacketRingBuffer` wrap/generation/stress, ISOBMFF structural checks including `> 4 GiB` `co64` math) + real NVENC H.264 + MF AAC encode -> `WriteMp4File` -> `IMFSourceReader` decode-back verification.
-- `clipper_bench.exe`: `--self-test-clip` and alternating 5-run `benchmark-checklist` CLI for live gaming latency and PresentMon Independent Flip verification.
+- `clipper_tests.exe`: unit tests (`Config`, `PacketRingBuffer` wrap/generation/stress/audio-range, ISOBMFF structural checks incl. `elst`, negative `HEAACWAVEINFO`, `> 4 GiB` `co64` math, component lifecycle) + real NVENC H.264 + MF AAC encode -> `WriteMp4File` -> `IMFSourceReader` decode-back verification.
+- `clipper_bench.exe`: `--self-test-clip <sec> --out <file.mp4>` and alternating `--gpu-load-bench <sec> --runs <N>` D3D11 + DXGI flip-model swapchain benchmark with deterministic child-process readiness/shutdown signaling.

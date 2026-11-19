@@ -339,6 +339,9 @@ bool VideoPipeline::InitNvenc(UINT width, UINT height, std::string& errOut) {
         }
     }
 
+    encFrameIdx_ = 0;
+    encoderInitialized_ = true;
+    eosSent_ = false;
     width_ = width;
     height_ = height;
     std::lock_guard<std::mutex> lock(statsMutex_);
@@ -402,12 +405,14 @@ bool VideoPipeline::InitAllResources(std::string& errOut) {
         D3D11_SDK_VERSION, &dev_, nullptr, &ctx_);
     if (FAILED(hr)) {
         errOut = "D3D11CreateDevice failed: " + HexHr(hr);
+        DestroyAllResources();
         return false;
     }
     Microsoft::WRL::ComPtr<ID3D11Multithread> mt;
     if (SUCCEEDED(dev_.As(&mt))) mt->SetMultithreadProtected(TRUE);
     if (FAILED(dev_.As(&videoDev_)) || FAILED(ctx_.As(&videoCtx_))) {
         errOut = "D3D11 video interfaces unavailable";
+        DestroyAllResources();
         return false;
     }
     ctx_.As(&videoCtx1_);
@@ -416,23 +421,41 @@ bool VideoPipeline::InitAllResources(std::string& errOut) {
     HRESULT dhr = E_FAIL;
     if (!CreateDuplication(w, h, dhr)) {
         errOut = "DuplicateOutput1 failed: " + HexHr(dhr);
+        DestroyAllResources();
         return false;
     }
-    if (!InitVideoProcessorAndTextures(w, h, errOut)) return false;
-    if (!InitNvenc(w, h, errOut)) return false;
+    if (!InitVideoProcessorAndTextures(w, h, errOut) || !InitNvenc(w, h, errOut)) {
+        DestroyAllResources();
+        return false;
+    }
     return true;
 }
 
-bool VideoPipeline::RetireSlot(int idx) {
+bool VideoPipeline::RetireSlot(int idx, bool draining) {
     EncodeSlot& s = slots_[idx];
     if (!s.inFlight) return true;
-    HANDLE waitHandles[2] = { s.eventHandle, stopEvent_ };
-    DWORD waitRes = WaitForMultipleObjects(2, waitHandles, FALSE, 2000);
-    if (waitRes == WAIT_OBJECT_0 + 1) {
-        s.inFlight = false;
+
+    DWORD waitRes = WAIT_FAILED;
+    if (draining) {
+        waitRes = WaitForSingleObject(s.eventHandle, 1000);
+    } else {
+        HANDLE waitHandles[2] = { s.eventHandle, stopEvent_ };
+        waitRes = WaitForMultipleObjects(2, waitHandles, FALSE, 2000);
+    }
+
+    if (!draining && waitRes == WAIT_OBJECT_0 + 1) {
         return false;
     }
+
+    auto unmapSlot = [&]() {
+        if (s.mappedRes && encoder_) {
+            nv_.nvEncUnmapInputResource(encoder_, s.mappedRes);
+            s.mappedRes = nullptr;
+        }
+    };
+
     if (waitRes != WAIT_OBJECT_0) {
+        unmapSlot();
         s.inFlight = false;
         std::lock_guard<std::mutex> lock(statsMutex_);
         stats_.errors++;
@@ -443,8 +466,9 @@ bool VideoPipeline::RetireSlot(int idx) {
     lb.version = NV_ENC_LOCK_BITSTREAM_VER;
     lb.outputBitstream = s.bitstream;
     NVENCSTATUS st = nv_.nvEncLockBitstream(encoder_, &lb);
-    s.inFlight = false;
     if (st != NV_ENC_SUCCESS) {
+        unmapSlot();
+        s.inFlight = false;
         std::lock_guard<std::mutex> lock(statsMutex_);
         stats_.errors++;
         return false;
@@ -454,6 +478,8 @@ bool VideoPipeline::RetireSlot(int idx) {
     ring_->Push(static_cast<const uint8_t*>(lb.bitstreamBufferPtr),
         lb.bitstreamSizeInBytes, s.ptsUs, s.durationUs, isIdr);
     nv_.nvEncUnlockBitstream(encoder_, s.bitstream);
+    unmapSlot();
+    s.inFlight = false;
 
     std::lock_guard<std::mutex> lock(statsMutex_);
     stats_.framesEncoded++;
@@ -461,20 +487,33 @@ bool VideoPipeline::RetireSlot(int idx) {
 }
 
 void VideoPipeline::DrainAllSlots() {
-    if (!encoder_) return;
-    for (int i = 0; i < kPoolSize; ++i) {
-        if (slots_[i].inFlight) RetireSlot(i);
+    if (!encoder_ || !encoderInitialized_) return;
+    int start = static_cast<int>(encFrameIdx_ % kPoolSize);
+    for (int k = 0; k < kPoolSize; ++k) {
+        int idx = (start + k) % kPoolSize;
+        if (slots_[idx].inFlight) RetireSlot(idx, true);
     }
-    NV_ENC_PIC_PARAMS eos{};
-    eos.version = NV_ENC_PIC_PARAMS_VER;
-    eos.encodePicFlags = NV_ENC_PIC_FLAG_EOS;
-    nv_.nvEncEncodePicture(encoder_, &eos);
+    if (!eosSent_) {
+        eosSent_ = true;
+        NV_ENC_PIC_PARAMS eos{};
+        eos.version = NV_ENC_PIC_PARAMS_VER;
+        eos.encodePicFlags = NV_ENC_PIC_FLAG_EOS;
+        eos.completionEvent = slots_[0].eventHandle;
+        if (nv_.nvEncEncodePicture(encoder_, &eos) == NV_ENC_SUCCESS && eos.completionEvent) {
+            WaitForSingleObject(eos.completionEvent, 500);
+        }
+    }
 }
 
 void VideoPipeline::DestroyNvencAndTextures() {
     DrainAllSlots();
+    encoderInitialized_ = false;
     if (encoder_) {
         for (int i = 0; i < kPoolSize; ++i) {
+            if (slots_[i].mappedRes) {
+                nv_.nvEncUnmapInputResource(encoder_, slots_[i].mappedRes);
+                slots_[i].mappedRes = nullptr;
+            }
             if (slots_[i].eventHandle) {
                 NV_ENC_EVENT_PARAMS ep{};
                 ep.version = NV_ENC_EVENT_PARAMS_VER;
@@ -503,7 +542,11 @@ void VideoPipeline::DestroyNvencAndTextures() {
         slots_[i].vpOut.Reset();
         slots_[i].nv12Tex.Reset();
         slots_[i].inFlight = false;
+        slots_[i].mappedRes = nullptr;
     }
+    encFrameIdx_ = 0;
+    encoderInitialized_ = true;
+    eosSent_ = false;
     vpInView_.Reset();
     lastFrameTex_.Reset();
     vp_.Reset();
@@ -520,14 +563,88 @@ void VideoPipeline::DestroyAllResources() {
     ctx_.Reset();
     dev_.Reset();
     if (ownedDesktop_) {
+        if (initialDesktop_) {
+            SetThreadDesktop(initialDesktop_);
+        }
         CloseDesktop(ownedDesktop_);
         ownedDesktop_ = nullptr;
     }
 }
 
+bool VideoPipeline::RecoverCapture(HRESULT ddaHr, bool forceFullReset, bool& forceNextIdr,
+                                   int64_t& paceStartUs, uint64_t& paceTick) {
+    {
+        std::lock_guard<std::mutex> lock(statsMutex_);
+        stats_.recovering = true;
+        stats_.recoveries++;
+    }
+    DrainAllSlots();
+    duplication_.Reset();
+    int64_t recStartUs = QpcDeltaToUs(NowQpcTicks() - epochQpc_);
+
+    bool needFullReset = forceFullReset ||
+        ddaHr == DXGI_ERROR_DEVICE_REMOVED || ddaHr == DXGI_ERROR_DEVICE_RESET;
+    if (needFullReset) {
+        ring_->AdvanceGeneration();
+        DestroyAllResources();
+    }
+
+    static constexpr DWORD kBackoffs[] = { 100, 250, 500, 1000 };
+    bool recovered = false;
+    for (int attempt = 0; WaitForSingleObject(stopEvent_, 0) == WAIT_TIMEOUT; ++attempt) {
+        std::string recErr;
+        if (needFullReset) {
+            if (InitAllResources(recErr)) {
+                recovered = true;
+                break;
+            }
+        } else {
+            RebindInputDesktop();
+            UINT nw = 0, nh = 0;
+            HRESULT rhr = E_FAIL;
+            if (CreateDuplication(nw, nh, rhr)) {
+                if (nw != width_ || nh != height_) {
+                    ring_->AdvanceGeneration();
+                    DestroyNvencAndTextures();
+                    if (InitVideoProcessorAndTextures(nw, nh, recErr) && InitNvenc(nw, nh, recErr)) {
+                        recovered = true;
+                        break;
+                    }
+                    DestroyAllResources();
+                    needFullReset = true;
+                } else {
+                    recovered = true;
+                    break;
+                }
+            } else if (rhr == DXGI_ERROR_DEVICE_REMOVED || rhr == DXGI_ERROR_DEVICE_RESET) {
+                ring_->AdvanceGeneration();
+                DestroyAllResources();
+                needFullReset = true;
+            }
+        }
+        DWORD ms = kBackoffs[std::min(attempt, 3)];
+        if (WaitForSingleObject(stopEvent_, ms) == WAIT_OBJECT_0) break;
+    }
+
+    int64_t recEndUs = QpcDeltaToUs(NowQpcTicks() - epochQpc_);
+    if (!needFullReset && (recEndUs - recStartUs) > 2'000'000LL) {
+        ring_->AdvanceGeneration();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(statsMutex_);
+        stats_.recovering = false;
+    }
+    forceNextIdr = true;
+    paceStartUs = recEndUs;
+    paceTick = 0;
+    return recovered;
+}
+
 void VideoPipeline::ThreadMain() {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    initialDesktop_ = GetThreadDesktop(GetCurrentThreadId());
     timeBeginPeriod(1);
 
     std::string err;
@@ -562,7 +679,7 @@ void VideoPipeline::ThreadMain() {
 
     int64_t paceStartUs = QpcDeltaToUs(NowQpcTicks() - epochQpc_);
     uint64_t paceTick = 0;
-    uint32_t encFrameIdx = 0;
+    encFrameIdx_ = 0;
     bool forceNextIdr = true;
 
     while (WaitForSingleObject(stopEvent_, 0) == WAIT_TIMEOUT) {
@@ -595,68 +712,16 @@ void VideoPipeline::ThreadMain() {
         }
 
         if (needRecover) {
-            {
-                std::lock_guard<std::mutex> lock(statsMutex_);
-                stats_.recovering = true;
-                stats_.recoveries++;
-            }
-            DrainAllSlots();
-            duplication_.Reset();
-            int64_t recStartUs = QpcDeltaToUs(NowQpcTicks() - epochQpc_);
-
-            if (ddaHr == DXGI_ERROR_DEVICE_REMOVED || ddaHr == DXGI_ERROR_DEVICE_RESET) {
-                ring_->AdvanceGeneration();
-                DestroyAllResources();
-                static constexpr DWORD kBackoffs[] = { 100, 250, 500, 1000 };
-                for (int attempt = 0;; ++attempt) {
-                    DWORD ms = kBackoffs[std::min(attempt, 3)];
-                    if (WaitForSingleObject(stopEvent_, ms) == WAIT_OBJECT_0) break;
-                    std::string recErr;
-                    if (InitAllResources(recErr)) break;
-                    DestroyAllResources();
-                }
-            } else {
-                static constexpr DWORD kBackoffs[] = { 100, 250, 500, 1000 };
-                for (int attempt = 0; WaitForSingleObject(stopEvent_, 0) == WAIT_TIMEOUT; ++attempt) {
-                    RebindInputDesktop();
-                    UINT nw = 0, nh = 0;
-                    HRESULT rhr = E_FAIL;
-                    if (CreateDuplication(nw, nh, rhr)) {
-                        if (nw != width_ || nh != height_) {
-                            ring_->AdvanceGeneration();
-                            DestroyNvencAndTextures();
-                            std::string recErr;
-                            if (!InitVideoProcessorAndTextures(nw, nh, recErr) || !InitNvenc(nw, nh, recErr)) {
-                                DestroyAllResources();
-                                std::string fullErr;
-                                InitAllResources(fullErr);
-                            }
-                        }
-                        break;
-                    }
-                    DWORD ms = kBackoffs[std::min(attempt, 3)];
-                    if (WaitForSingleObject(stopEvent_, ms) == WAIT_OBJECT_0) break;
-                }
-                int64_t recEndUs = QpcDeltaToUs(NowQpcTicks() - epochQpc_);
-                if ((recEndUs - recStartUs) > 2'000'000LL) {
-                    ring_->AdvanceGeneration();
-                }
-            }
-
-            {
-                std::lock_guard<std::mutex> lock(statsMutex_);
-                stats_.recovering = false;
-            }
-            forceNextIdr = true;
-            paceStartUs = QpcDeltaToUs(NowQpcTicks() - epochQpc_);
-            paceTick = 0;
+            if (!RecoverCapture(ddaHr, false, forceNextIdr, paceStartUs, paceTick)) break;
             continue;
         }
 
-        int slotIdx = static_cast<int>(encFrameIdx % kPoolSize);
+        int slotIdx = static_cast<int>(encFrameIdx_ % kPoolSize);
         if (slots_[slotIdx].inFlight) {
-            if (!RetireSlot(slotIdx)) {
+            if (!RetireSlot(slotIdx, false)) {
                 if (WaitForSingleObject(stopEvent_, 0) == WAIT_OBJECT_0) break;
+                if (!RecoverCapture(E_FAIL, true, forceNextIdr, paceStartUs, paceTick)) break;
+                continue;
             }
         }
 
@@ -665,14 +730,12 @@ void VideoPipeline::ThreadMain() {
         strm.pInputSurface = vpInView_.Get();
         HRESULT vpHr = videoCtx_->VideoProcessorBlt(vp_.Get(), slots_[slotIdx].vpOut.Get(), 0, 1, &strm);
         if (FAILED(vpHr)) {
-            std::lock_guard<std::mutex> lock(statsMutex_);
-            stats_.errors++;
+            {
+                std::lock_guard<std::mutex> lock(statsMutex_);
+                stats_.errors++;
+            }
             if (vpHr == DXGI_ERROR_DEVICE_REMOVED || vpHr == DXGI_ERROR_DEVICE_RESET) {
-                ring_->AdvanceGeneration();
-                DestroyAllResources();
-                std::string recErr;
-                InitAllResources(recErr);
-                forceNextIdr = true;
+                if (!RecoverCapture(vpHr, true, forceNextIdr, paceStartUs, paceTick)) break;
             }
             continue;
         }
@@ -691,7 +754,7 @@ void VideoPipeline::ThreadMain() {
         pic.inputWidth = width_;
         pic.inputHeight = height_;
         pic.inputPitch = width_;
-        pic.frameIdx = encFrameIdx;
+        pic.frameIdx = encFrameIdx_;
         pic.inputTimeStamp = static_cast<uint64_t>(ptsUs);
         pic.inputDuration = nominalDurUs;
         pic.inputBuffer = mir.mappedResource;
@@ -705,16 +768,18 @@ void VideoPipeline::ThreadMain() {
         }
 
         NVENCSTATUS est = nv_.nvEncEncodePicture(encoder_, &pic);
-        nv_.nvEncUnmapInputResource(encoder_, mir.mappedResource);
-
         if (est == NV_ENC_SUCCESS) {
+            slots_[slotIdx].mappedRes = mir.mappedResource;
             slots_[slotIdx].inFlight = true;
             slots_[slotIdx].ptsUs = ptsUs;
             slots_[slotIdx].durationUs = nominalDurUs;
-            encFrameIdx++;
-        } else if (est != NV_ENC_ERR_NEED_MORE_INPUT) {
-            std::lock_guard<std::mutex> lock(statsMutex_);
-            stats_.errors++;
+            encFrameIdx_++;
+        } else {
+            nv_.nvEncUnmapInputResource(encoder_, mir.mappedResource);
+            if (est != NV_ENC_ERR_NEED_MORE_INPUT) {
+                std::lock_guard<std::mutex> lock(statsMutex_);
+                stats_.errors++;
+            }
         }
 
         if (collectSamples_.load(std::memory_order_relaxed)) {
@@ -745,6 +810,7 @@ void VideoPipeline::ThreadMain() {
 
     if (timer) CloseHandle(timer);
     DestroyAllResources();
+    initialDesktop_ = nullptr;
     timeEndPeriod(1);
     CoUninitialize();
 }

@@ -74,7 +74,9 @@ private:
     std::wstring MakeDefaultClipPath() const;
 
     AppConfig cfg_;
+    mutable std::mutex lifecycleMutex_;
     std::atomic<EngineState> state_{ EngineState::Stopped };
+    std::atomic<bool> stoppingWait_{ false };
     int64_t epochQpc_ = 0;
 
     PacketRingBuffer videoRing_;

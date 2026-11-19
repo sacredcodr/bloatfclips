@@ -222,6 +222,29 @@ struct StscRun {
     uint32_t sampleDescIndex = 1;
 };
 
+bool SynthesizeAacLcAsc(uint32_t sampleRate, uint32_t channels, std::vector<uint8_t>& outAsc) {
+    static constexpr uint32_t kRates[] = {
+        96000, 88200, 64000, 48000, 44100, 32000, 24000,
+        22050, 16000, 12000, 11025, 8000, 7350
+    };
+    uint32_t freqIdx = UINT32_MAX;
+    for (uint32_t i = 0; i < sizeof(kRates) / sizeof(kRates[0]); ++i) {
+        if (kRates[i] == sampleRate) {
+            freqIdx = i;
+            break;
+        }
+    }
+    if (freqIdx == UINT32_MAX || channels == 0 || channels > 7) {
+        return false;
+    }
+    uint16_t val = static_cast<uint16_t>((2u << 11) | (freqIdx << 7) | (channels << 3));
+    outAsc = {
+        static_cast<uint8_t>((val >> 8) & 0xFFu),
+        static_cast<uint8_t>(val & 0xFFu)
+    };
+    return true;
+}
+
 struct PreparedMuxData {
     std::vector<uint8_t> sps;
     std::vector<uint8_t> pps;
@@ -237,6 +260,9 @@ struct PreparedMuxData {
     uint32_t audioBitrateBps = 192000;
     std::vector<uint32_t> audioSampleSizes;
     uint64_t audioTotalSamples = 0;
+    uint32_t audioDelayTicks = 0;
+    uint32_t audioMediaStart = 0;
+    uint64_t audioTrackDuration = 0;
     uint64_t movieDuration = 0;
 
     std::vector<PreparedChunk> chunks;
@@ -326,20 +352,43 @@ bool PrepareMuxData(const Mp4MuxInput& input, PreparedMuxData& out, std::string&
         out.audioSampleRate = input.audioSampleRate ? input.audioSampleRate : 48000u;
         out.audioChannels = input.audioChannels ? input.audioChannels : 2u;
         out.audioBitrateBps = input.audioBitrateBps ? input.audioBitrateBps : 192000u;
-        out.audioAsc = input.audioSpecificConfig.empty()
-            ? std::vector<uint8_t>{ 0x11, 0x90 }
-            : input.audioSpecificConfig;
+        if (!input.audioSpecificConfig.empty()) {
+            out.audioAsc = input.audioSpecificConfig;
+        } else if (!SynthesizeAacLcAsc(out.audioSampleRate, out.audioChannels, out.audioAsc)) {
+            errOut = "unsupported audio parameters for AudioSpecificConfig";
+            return false;
+        }
+        if (out.audioAsc.size() > 64) {
+            errOut = "AudioSpecificConfig exceeds maximum supported length";
+            return false;
+        }
         out.audioSampleSizes.reserve(input.audio.packets.size());
         for (const auto& ap : input.audio.packets) {
             out.audioSampleSizes.push_back(ap.size);
         }
         out.audioTotalSamples = static_cast<uint64_t>(out.audioSampleSizes.size()) * 1024ULL;
+
+        int64_t audioDeltaUs = input.audio.packets.front().ptsUs - basePtsUs;
+        if (audioDeltaUs >= 1000) {
+            out.audioDelayTicks = static_cast<uint32_t>(std::clamp<int64_t>(
+                std::llround(static_cast<double>(audioDeltaUs) * kVideoTimescale / 1'000'000.0),
+                1LL, static_cast<int64_t>(UINT32_MAX / 2)));
+        } else if (audioDeltaUs <= -1000 && out.audioTotalSamples > 1) {
+            uint64_t trimSamples = static_cast<uint64_t>(
+                std::llround(static_cast<double>(-audioDeltaUs) * out.audioSampleRate / 1'000'000.0));
+            out.audioMediaStart = static_cast<uint32_t>(
+                std::min<uint64_t>(trimSamples, out.audioTotalSamples - 1ULL));
+        }
+
+        uint64_t playedSamples = (out.audioTotalSamples > out.audioMediaStart)
+            ? (out.audioTotalSamples - out.audioMediaStart)
+            : 0ULL;
+        uint64_t playedMovieDur = static_cast<uint64_t>(
+            std::llround(static_cast<double>(playedSamples) * kVideoTimescale / out.audioSampleRate));
+        out.audioTrackDuration = static_cast<uint64_t>(out.audioDelayTicks) + playedMovieDur;
     }
 
-    uint64_t audioMovieDur = out.hasAudio
-        ? static_cast<uint64_t>(std::llround(static_cast<double>(out.audioTotalSamples) * kVideoTimescale / out.audioSampleRate))
-        : 0ULL;
-    out.movieDuration = std::max(out.videoTotalTicks, audioMovieDur);
+    out.movieDuration = std::max(out.videoTotalTicks, out.audioTrackDuration);
 
     size_t vIdx = 0;
     size_t aIdx = 0;
@@ -353,6 +402,9 @@ bool PrepareMuxData(const Mp4MuxInput& input, PreparedMuxData& out, std::string&
             while (vIdx < nv && (input.video.packets[vIdx].ptsUs < bucketEndUs || vIdx == vStart)) {
                 vBytes += out.videoSamples[vIdx].avccBytes.size();
                 vIdx++;
+            }
+            if (vIdx > vStart && input.video.packets[vIdx - 1].ptsUs >= bucketEndUs) {
+                bucketEndUs = input.video.packets[vIdx - 1].ptsUs + 1'000'000;
             }
             out.videoChunkIndices.push_back(static_cast<uint32_t>(out.chunks.size()));
             out.chunks.push_back(PreparedChunk{ true, vStart, static_cast<uint32_t>(vIdx - vStart), vBytes });
@@ -587,8 +639,13 @@ std::vector<uint8_t> BuildMoovBox(const Mp4MuxInput& input, const PreparedMuxDat
 
     if (data.hasAudio) {
         size_t trak = BeginBox(b, "trak");
-        uint64_t audioMovieDur = static_cast<uint64_t>(
-            std::llround(static_cast<double>(data.audioTotalSamples) * kVideoTimescale / data.audioSampleRate));
+        uint64_t audioMovieDur = data.audioTrackDuration;
+        uint64_t playedSamples = (data.audioTotalSamples > data.audioMediaStart)
+            ? (data.audioTotalSamples - data.audioMediaStart)
+            : 0ULL;
+        uint32_t playedDur = static_cast<uint32_t>(std::min<uint64_t>(
+            static_cast<uint64_t>(std::llround(static_cast<double>(playedSamples) * kVideoTimescale / data.audioSampleRate)),
+            UINT32_MAX));
 
         size_t tkhd = BeginFullBox(b, "tkhd", 0, 3);
         AppendBE32(b, 0);
@@ -605,6 +662,30 @@ std::vector<uint8_t> BuildMoovBox(const Mp4MuxInput& input, const PreparedMuxDat
         AppendBE32(b, 0);
         AppendBE32(b, 0);
         EndBox(b, tkhd);
+
+        if (data.audioDelayTicks > 0 || data.audioMediaStart > 0) {
+            size_t edts = BeginBox(b, "edts");
+            size_t elst = BeginFullBox(b, "elst", 0, 0);
+            if (data.audioDelayTicks > 0) {
+                AppendBE32(b, 2);
+                AppendBE32(b, data.audioDelayTicks);
+                AppendBE32(b, 0xFFFFFFFFu);
+                AppendBE16(b, 1);
+                AppendBE16(b, 0);
+                AppendBE32(b, playedDur);
+                AppendBE32(b, 0);
+                AppendBE16(b, 1);
+                AppendBE16(b, 0);
+            } else {
+                AppendBE32(b, 1);
+                AppendBE32(b, playedDur);
+                AppendBE32(b, data.audioMediaStart);
+                AppendBE16(b, 1);
+                AppendBE16(b, 0);
+            }
+            EndBox(b, elst);
+            EndBox(b, edts);
+        }
 
         size_t mdia = BeginBox(b, "mdia");
         size_t mdhd = BeginFullBox(b, "mdhd", 0, 0);
@@ -749,10 +830,10 @@ bool WriteAllBytes(HANDLE hFile, const uint8_t* data, size_t len) {
 }
 
 std::vector<uint8_t> ExtractAudioSpecificConfigFromMfUserData(const uint8_t* data, size_t len) {
-    if (!data || len < 14) return { 0x11, 0x90 };
+    if (!data || len < 14) return {};
     uint16_t payloadType = static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
     uint16_t structType = static_cast<uint16_t>(data[4]) | (static_cast<uint16_t>(data[5]) << 8);
-    if (payloadType != 0 || structType != 0) return { 0x11, 0x90 };
+    if (payloadType != 0 || structType != 0) return {};
     return std::vector<uint8_t>(data + 12, data + len);
 }
 

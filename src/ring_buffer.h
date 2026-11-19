@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -41,6 +43,8 @@ public:
     size_t PacketCount() const;
     size_t UsedPayloadBytes() const;
     uint64_t DroppedOversizeCount() const;
+    bool WaitForPts(int64_t targetPtsUs, const std::atomic<bool>& abortFlag, uint32_t timeoutMs) const;
+    void NotifyAll() const;
 
 private:
     struct PacketSlot {
@@ -54,6 +58,7 @@ private:
     };
 
     mutable std::mutex mutex_;
+    mutable std::condition_variable cv_;
     std::vector<uint8_t> arena_;
     std::vector<PacketSlot> slots_;
     size_t arenaCapacity_ = 0;
@@ -64,6 +69,7 @@ private:
     uint64_t writeLogical_ = 0;
     uint64_t usedPayloadBytes_ = 0;
     uint64_t droppedOversize_ = 0;
+    int64_t latestPtsUs_ = INT64_MIN;
     uint32_t generation_ = 1;
 };
 

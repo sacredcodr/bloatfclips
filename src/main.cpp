@@ -275,8 +275,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     }
 
     bool failFast = false;
+    std::wstring readyEventName;
     for (int i = 1; i < __argc; ++i) {
-        if (wcscmp(__wargv[i], L"--fail-fast") == 0) failFast = true;
+        std::wstring arg = __wargv[i];
+        if (arg == L"--fail-fast") {
+            failFast = true;
+        } else if (arg.rfind(L"--ready-event=", 0) == 0) {
+            readyEventName = arg.substr(14);
+        }
     }
 
     std::string startErr;
@@ -289,6 +295,11 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         }
         std::wstring errW = L"Capture start failed: " + clipper::Utf8ToWide(startErr);
         ShowTrayBalloon(app, L"Clipper", errW.c_str(), NIIF_ERROR);
+    } else if (!readyEventName.empty()) {
+        if (HANDLE readyEvt = OpenEventW(EVENT_MODIFY_STATE, FALSE, readyEventName.c_str())) {
+            SetEvent(readyEvt);
+            CloseHandle(readyEvt);
+        }
     }
 
     MSG msg{};
