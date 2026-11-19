@@ -365,7 +365,7 @@ void SettingsWindow::ShowOrFocus(HINSTANCE hInst, HICON icon, SettingsTab initia
     int posY = mi.rcWork.top + ((mi.rcWork.bottom - mi.rcWork.top) - winH) / 2;
 
     hwnd_ = CreateWindowExW(
-        0, kSettingsWndClass, L"Clipper", style,
+        0, kSettingsWndClass, kAppName, style,
         posX, posY, winW, winH,
         nullptr, nullptr, hInst, this);
     if (!hwnd_) return;
@@ -906,21 +906,11 @@ void SettingsWindow::DrawTitleBar() {
     brush_->SetColor(dotCol);
     rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(20.0f, 20.0f), 3.5f, 3.5f), brush_.Get());
 
-    DrawTextLine(L"Clipper", fmtBrand_.Get(), D2D1::RectF(34.0f, 0.0f, 88.0f, kTitleBarH), C(0xE4E4E7));
+    DrawTextLine(kAppName, fmtBrand_.Get(), D2D1::RectF(34.0f, 0.0f, 140.0f, kTitleBarH), C(0xE4E4E7));
 
-    std::wstring durStr = FormatReplayLengthShort(appliedCfg_.replaySeconds);
-    wchar_t specBuf[96] = {};
     if (status_.state == EngineState::Faulted && !status_.lastError.empty()) {
         std::wstring errW = Utf8ToWide(status_.lastError);
-        DrawTextLine(errW, fmtMono_.Get(), D2D1::RectF(92.0f, 0.0f, 760.0f, kTitleBarH), kColRed);
-    } else if (status_.video.width > 0 && status_.video.height > 0) {
-        std::swprintf(specBuf, sizeof(specBuf) / sizeof(wchar_t), L"%up · %u fps · %ls",
-            status_.video.height, appliedCfg_.fps, durStr.c_str());
-        DrawTextLine(specBuf, fmtMono_.Get(), D2D1::RectF(92.0f, 0.0f, 680.0f, kTitleBarH), kColTextMuted);
-    } else {
-        std::swprintf(specBuf, sizeof(specBuf) / sizeof(wchar_t), L"%u fps · %ls",
-            appliedCfg_.fps, durStr.c_str());
-        DrawTextLine(specBuf, fmtMono_.Get(), D2D1::RectF(92.0f, 0.0f, 680.0f, kTitleBarH), kColTextMuted);
+        DrawTextLine(errW, fmtMono_.Get(), D2D1::RectF(140.0f, 0.0f, 760.0f, kTitleBarH), kColRed);
     }
 
     D2D1_RECT_F saveRect = D2D1::RectF(814.0f, 6.0f, 906.0f, 34.0f);

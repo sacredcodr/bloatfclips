@@ -8,6 +8,9 @@
 
 namespace clipper {
 
+// User-visible product name (window titles, title bar, tray tooltip and balloons).
+inline constexpr wchar_t kAppName[] = L"bloatfclips";
+
 inline constexpr uint32_t kMinFps = 15;
 inline constexpr uint32_t kMaxFps = 240;
 inline constexpr uint32_t kMinBitrateMbps = 2;

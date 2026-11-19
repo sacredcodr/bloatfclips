@@ -483,7 +483,7 @@ int RunGpuLoadBench(int secondsPerRun, int runsPerSide) {
         return 1;
     }
 
-    if (HWND existing = FindWindowW(L"ClipperTrayHiddenWindow", L"Clipper")) {
+    if (HWND existing = FindWindowW(L"ClipperTrayHiddenWindow", clipper::kAppName)) {
         std::printf("Bench FAIL: clipper.exe is already running; close it first\n");
         return 1;
     }

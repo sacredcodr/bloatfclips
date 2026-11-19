@@ -97,7 +97,7 @@ void UpdateTrayTooltip(const AppState& app) {
     nid.hWnd = app.hwnd;
     nid.uID = kTrayIconId;
     nid.uFlags = NIF_TIP;
-    std::wstring tip = L"Clipper (" + clipper::Utf8ToWide(app.config.hotkeySave.display) + L")";
+    std::wstring tip = std::wstring(clipper::kAppName) + L" (" + clipper::Utf8ToWide(app.config.hotkeySave.display) + L")";
     wcsncpy_s(nid.szTip, tip.c_str(), _TRUNCATE);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
@@ -110,7 +110,7 @@ void AddTrayIcon(AppState& app) {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = kWmTray;
     nid.hIcon = app.trayIcon;
-    std::wstring tip = L"Clipper (" + clipper::Utf8ToWide(app.config.hotkeySave.display) + L")";
+    std::wstring tip = std::wstring(clipper::kAppName) + L" (" + clipper::Utf8ToWide(app.config.hotkeySave.display) + L")";
     wcsncpy_s(nid.szTip, tip.c_str(), _TRUNCATE);
     app.trayAdded = Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
     if (app.trayAdded) {
@@ -309,7 +309,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     if (app->settingsWin && app->settingsWin->IsOpen()) {
                         app->settingsWin->ShowFeedback(msgW, true);
                     } else {
-                        ShowTrayBalloon(*app, L"Clipper", msgW.c_str(), NIIF_ERROR);
+                        ShowTrayBalloon(*app, clipper::kAppName, msgW.c_str(), NIIF_ERROR);
                     }
                 }
             }
@@ -402,7 +402,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     HANDLE singleMutex = CreateMutexW(nullptr, TRUE, kMutexName);
     if (singleMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
         if (!startInTray && !failFast && showSettingsMsg != 0) {
-            if (HWND existing = FindWindowW(kWndClass, L"Clipper")) {
+            if (HWND existing = FindWindowW(kWndClass, clipper::kAppName)) {
                 PostMessageW(existing, showSettingsMsg, 0, 0);
             }
         }
@@ -432,7 +432,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     wc.lpszClassName = kWndClass;
     RegisterClassExW(&wc);
 
-    app.hwnd = CreateWindowExW(0, kWndClass, L"Clipper", WS_OVERLAPPED,
+    app.hwnd = CreateWindowExW(0, kWndClass, clipper::kAppName, WS_OVERLAPPED,
         0, 0, 0, 0, nullptr, nullptr, hInst, nullptr);
     SetWindowLongPtrW(app.hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&app));
 
@@ -478,8 +478,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     bool hkOk = RegisterSaveHotkey(app);
     if (!hkOk && !failFast) {
         std::wstring warn = L"Could not register hotkey " + clipper::Utf8ToWide(app.config.hotkeySave.display) +
-                            L" (collision with another app). Change it in Clipper Settings.";
-        ShowTrayBalloon(app, L"Clipper", warn.c_str(), NIIF_WARNING);
+                            L" (collision with another app). Change it in " + std::wstring(clipper::kAppName) + L" Settings.";
+        ShowTrayBalloon(app, clipper::kAppName, warn.c_str(), NIIF_WARNING);
     }
 
     int exitCode = 0;
@@ -492,7 +492,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
             DestroyWindow(app.hwnd);
         } else {
             std::wstring errW = L"Capture start failed: " + clipper::Utf8ToWide(startErr);
-            ShowTrayBalloon(app, L"Clipper", errW.c_str(), NIIF_ERROR);
+            ShowTrayBalloon(app, clipper::kAppName, errW.c_str(), NIIF_ERROR);
         }
     } else if (!readyEventName.empty()) {
         if (HANDLE readyEvt = OpenEventW(EVENT_MODIFY_STATE, FALSE, readyEventName.c_str())) {
