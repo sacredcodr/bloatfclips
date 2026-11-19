@@ -165,9 +165,47 @@ void WireSaveCallback(AppState& app) {
     });
 }
 
+// Windows sign-in autostart lives in HKCU\...\Run under the same value name the installer writes,
+// so the Settings switch, the installer checkbox and the uninstaller all manage one entry.
+constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+
+std::wstring AutostartCommand() {
+    wchar_t exePath[MAX_PATH] = {};
+    DWORD n = GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    return L"\"" + std::wstring(exePath, n) + L"\" --tray";
+}
+
+// On only when the entry starts this exe; an entry for another copy (e.g. installed vs. portable)
+// reads as off, and turning the switch on repoints it here.
+bool IsAutostartEnabled() {
+    wchar_t buf[1024] = {};
+    DWORD size = sizeof(buf);
+    if (RegGetValueW(HKEY_CURRENT_USER, kRunKey, clipper::kAppName, RRF_RT_REG_SZ, nullptr, buf, &size) != ERROR_SUCCESS) {
+        return false;
+    }
+    return _wcsicmp(buf, AutostartCommand().c_str()) == 0;
+}
+
+bool SetAutostartEnabled(bool enabled) {
+    if (!enabled) {
+        LSTATUS st = RegDeleteKeyValueW(HKEY_CURRENT_USER, kRunKey, clipper::kAppName);
+        return st == ERROR_SUCCESS || st == ERROR_FILE_NOT_FOUND;
+    }
+    std::wstring cmd = AutostartCommand();
+    if (cmd.empty()) return false;
+    return RegSetKeyValueW(HKEY_CURRENT_USER, kRunKey, clipper::kAppName, REG_SZ, cmd.c_str(),
+        static_cast<DWORD>((cmd.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
+}
+
 bool ApplyNewConfig(AppState& app, clipper::AppConfig nextCfg, std::wstring& feedbackOut, bool& isErrOut) {
     std::vector<std::string> warnings;
     clipper::ValidateAppConfig(nextCfg, warnings);
+
+    if (nextCfg.startWithWindows != app.config.startWithWindows && !SetAutostartEnabled(nextCfg.startWithWindows)) {
+        nextCfg.startWithWindows = app.config.startWithWindows;
+        warnings.push_back("could not change the Windows startup entry");
+    }
 
     bool needsRestart = !app.engine ||
         nextCfg.monitorIndex != app.config.monitorIndex ||
@@ -420,6 +458,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     AppState app;
     app.hInst = hInst;
     app.config = cliParsed.config;
+    app.config.startWithWindows = IsAutostartEnabled();
     app.taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
     app.showSettingsMsg = showSettingsMsg;
     app.trayIcon = CreateRecorderTrayIcon();

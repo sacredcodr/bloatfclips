@@ -38,6 +38,8 @@ struct AppConfig {
     std::string outputDirRaw = "%USERPROFILE%\\Videos\\Clips";
     std::wstring outputDir;
     bool saveChime = true;
+    // Mirrors the HKCU Run entry (shared with the installer); never stored in clipper.ini.
+    bool startWithWindows = false;
 
     size_t VideoArenaBytes() const;
     size_t VideoMaxSlots() const;

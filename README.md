@@ -56,13 +56,13 @@ bloatfclips starts recording right away. Its icon appears in the system tray and
 
 ### Portable (ZIP)
 
-Prefer no installer? Download `bloatfclips-<version>-portable.zip` from the Releases page, unzip it anywhere you can write to (for example `Documents`), and run `bloatfclips.exe`. Settings are saved next to the exe. To remove it, exit bloatfclips from the tray and delete the folder.
+Prefer no installer? Download `bloatfclips-<version>-portable.zip` from the Releases page, unzip it anywhere you can write to (for example `Documents`), and run `bloatfclips.exe`. Settings are saved next to the exe. To start it with Windows, turn on **Settings → Startup**. To remove it, turn that switch off, exit bloatfclips from the tray, and delete the folder.
 
 ## Using bloatfclips
 
 ### Window
 
-The **Settings** page (screenshot above) changes the monitor, frame rate, replay length, bitrate, audio sources, save hotkey, and clips folder. Changes take effect when you click **Apply changes**. The footer shows how much RAM the replay buffer may use at most.
+The **Settings** page (screenshot above) changes the monitor, frame rate, replay length, bitrate, audio sources, startup, save hotkey, and clips folder. Changes take effect when you click **Apply changes**. The footer shows how much RAM the replay buffer may use at most.
 
 The **Clips** page lists up to 48 recent clips from the clips folder. Click a thumbnail to play it.
 
@@ -91,7 +91,7 @@ Closing the window hides bloatfclips to the tray and keeps recording. Launching 
 | `--fail-fast` | Exit with code `2` if capture cannot start |
 | `--ready-event=NAME` | Signal a named Win32 event once capture is running (for scripts and benchmarks) |
 
-The installer's autostart option runs `bloatfclips.exe --tray` at sign-in.
+**Start in background with Windows** (Settings → Startup) runs `bloatfclips.exe --tray` when you sign in. It works for both the installer and the portable ZIP. The installer's autostart checkbox sets the same switch.
 
 ## Configuration
 
