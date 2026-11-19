@@ -1,4 +1,5 @@
 #include "audio_engine.h"
+#include "clip_library.h"
 #include "clock.h"
 #include "config.h"
 #include "mp4_muxer.h"
@@ -9,8 +10,6 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <d3d11_1.h>
-#include <d3d11_4.h>
-#include <dxgi1_6.h>
 #include <mfapi.h>
 #include <mferror.h>
 #include <mfidl.h>
@@ -25,7 +24,6 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <numeric>
 #include <string>
 #include <thread>
 #include <vector>
@@ -965,6 +963,54 @@ void TestEndToEndNvencAacAndSourceReader() {
     std::printf("PASS TestEndToEndNvencAacAndSourceReader\n");
 }
 
+void TestClipLibrary() {
+    CHECK(FormatBytesHuman(0) == L"0 B");
+    CHECK(FormatBytesHuman(512) == L"512 B");
+    CHECK(FormatBytesHuman(1536) == L"1.5 KB");
+    CHECK(FormatBytesHuman(19293798ULL) == L"18.4 MB");
+    CHECK(FormatBytesHuman(1342177280ULL) == L"1.25 GB");
+
+    CHECK(FormatDurationShort(0.0).empty());
+    CHECK(FormatDurationShort(3.0) == L"0:03");
+    CHECK(FormatDurationShort(65.2) == L"1:05");
+    CHECK(FormatDurationShort(3661.0) == L"1:01:01");
+
+    CHECK(ProbeMp4DurationSeconds(L"Z:\\nonexistent\\missing_clip.mp4") == 0.0);
+
+    std::filesystem::path outDir = std::filesystem::current_path() / "build" / "test_out";
+    std::filesystem::path mp4Path = outDir / "e2e_h264_aac.mp4";
+    CHECK(std::filesystem::exists(mp4Path));
+
+    double dur = ProbeMp4DurationSeconds(mp4Path.wstring());
+    std::printf("ProbeMp4DurationSeconds=%.3fs\n", dur);
+    CHECK(dur >= 0.90 && dur <= 1.15);
+
+    std::filesystem::path tmpFile = outDir / "e2e_h264_aac.mp4.tmp";
+    {
+        HANDLE h = CreateFileW(tmpFile.wstring().c_str(), GENERIC_WRITE, 0, nullptr,
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    }
+
+    auto clips = ScanClipsDirectory(outDir.wstring(), 16);
+    std::error_code ec;
+    std::filesystem::remove(tmpFile, ec);
+
+    bool foundE2e = false;
+    for (const auto& c : clips) {
+        CHECK(c.fileName.find(L".tmp") == std::wstring::npos);
+        if (c.fileName == L"e2e_h264_aac.mp4") {
+            foundE2e = true;
+            CHECK(c.displayTitle == L"e2e_h264_aac");
+            CHECK(c.sizeBytes > 10000);
+            CHECK(c.durationSec >= 0.90 && c.durationSec <= 1.15);
+            CHECK(!c.dateLabel.empty());
+        }
+    }
+    CHECK(foundE2e);
+    std::printf("PASS TestClipLibrary\n");
+}
+
 }
 
 int main() {
@@ -976,6 +1022,7 @@ int main() {
     TestMp4StructureAndCo64();
     TestRecorderComponentsAndLifecycle();
     TestEndToEndNvencAacAndSourceReader();
+    TestClipLibrary();
 
     MFShutdown();
     CoUninitialize();

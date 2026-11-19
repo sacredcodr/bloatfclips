@@ -301,6 +301,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         wchar_t msgBuf[256] = {};
                         std::swprintf(msgBuf, sizeof(msgBuf) / sizeof(wchar_t),
                             L"Saved %ls (%.1f ms)", fileName.c_str(), res->saveMs);
+                        app->settingsWin->NotifyClipsChanged();
                         app->settingsWin->ShowFeedback(msgBuf, false);
                     }
                 } else {
@@ -374,6 +375,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
 
     bool failFast = false;
     bool startInTray = false;
+    clipper::SettingsTab initialTab = clipper::SettingsTab::Clips;
     std::wstring readyEventName;
     for (int i = 1; i < __argc; ++i) {
         std::wstring arg = __wargv[i];
@@ -383,6 +385,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
             startInTray = true;
         } else if (arg.rfind(L"--ready-event=", 0) == 0) {
             readyEventName = arg.substr(14);
+        } else if (arg.rfind(L"--page=", 0) == 0) {
+            std::wstring p = arg.substr(7);
+            if (_wcsicmp(p.c_str(), L"capture") == 0) initialTab = clipper::SettingsTab::Capture;
+            else if (_wcsicmp(p.c_str(), L"audio") == 0) initialTab = clipper::SettingsTab::Audio;
+            else if (_wcsicmp(p.c_str(), L"hotkeys") == 0) initialTab = clipper::SettingsTab::Hotkeys;
+            else initialTab = clipper::SettingsTab::Clips;
         }
     }
 
@@ -435,6 +443,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         if (app.engine) {
             st.state = app.engine->State();
             st.video = app.engine->GetVideoStats();
+            st.audio = app.engine->GetAudioStats();
         }
         st.lastError = app.lastStartError;
         return st;
@@ -491,7 +500,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
 
     if (exitCode == 0) {
         if (!startInTray && !failFast) {
-            OpenSettings(app);
+            if (app.settingsWin) app.settingsWin->ShowOrFocus(app.hInst, app.trayIcon, initialTab);
             if (!started && app.settingsWin) {
                 app.settingsWin->ShowFeedback(L"Capture failed: " + clipper::Utf8ToWide(startErr), true);
             } else if (!hkOk && app.settingsWin) {
@@ -504,9 +513,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
 
         MSG msg{};
         while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-            if (app.settingsWin && app.settingsWin->Handle() && IsDialogMessageW(app.settingsWin->Handle(), &msg)) {
-                continue;
-            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }

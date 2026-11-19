@@ -11,6 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(clipper_core STATIC
   src/config.cpp
+  src/clip_library.cpp
   src/ring_buffer.cpp
   src/mp4_muxer.cpp
   src/video_pipeline.cpp
@@ -65,10 +66,11 @@ target_link_libraries(clipper
     clipper_core
     shell32
     gdi32
-    comctl32
     dwmapi
-    uxtheme
     shcore
+    d2d1
+    dwrite
+    windowscodecs
 )
 
 add_executable(clipper_tests

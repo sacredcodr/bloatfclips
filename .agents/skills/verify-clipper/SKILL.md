@@ -53,14 +53,14 @@ c:\Users\yugi\Desktop\recorder\build\clipper_bench.exe --gpu-load-bench 3 --runs
 
 If testing tray startup directly, pass `--tray --fail-fast --ready-event=<UniqueName>` to `build\clipper.exe` and terminate only the matching child process PID via `WM_CLOSE`.
 
-When verifying Settings GUI changes, launch `build\clipper.exe` without `--tray` and verify `ClipperSettingsWindow` opens (`IsWindowVisible`), destroys itself cleanly on `WM_CLOSE` while leaving `ClipperTrayHiddenWindow` running, re-opens on a second `clipper.exe` invocation, and exits cleanly when `WM_CLOSE` is sent to `ClipperTrayHiddenWindow`.
+When verifying UI changes, launch `build\clipper.exe` without `--tray` and verify `ClipperSettingsWindow` opens (`IsWindowVisible`, >= `800x500`), destroys itself cleanly on `WM_CLOSE` while leaving `ClipperTrayHiddenWindow` running, re-opens on a second `clipper.exe` invocation, and exits cleanly when `WM_CLOSE` is sent to `ClipperTrayHiddenWindow`.
 
 ## Evidence
 
 Record and verify every pass gate below before reporting success.
 
 * `cmake --build build` exits `0` with zero compiler warnings.
-* `clipper_tests.exe` prints all 5 `PASS` lines (`TestConfig`, `TestRingBuffer`, `TestMp4StructureAndCo64`, `TestRecorderComponentsAndLifecycle`, `TestEndToEndNvencAacAndSourceReader`) and `Total failures: 0`.
+* `clipper_tests.exe` prints all 6 `PASS` lines (`TestConfig`, `TestRingBuffer`, `TestMp4StructureAndCo64`, `TestRecorderComponentsAndLifecycle`, `TestEndToEndNvencAacAndSourceReader`, `TestClipLibrary`) and `Total failures: 0`.
 * `clipper_bench.exe --self-test-clip 3` prints `PASS SelfTestClip` with `recoveries=0`, `err=0` on both video and audio, valid MP4 duration around `3.0s`, `videoFrames > 0`, and `pcmBytes > 0`.
 * `clipper_bench.exe --gpu-load-bench 3 --runs 5` exits `0` with `max active disk write=0 B` and prints CPU, RAM, and frame-time medians across all alternating rounds.
 

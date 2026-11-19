@@ -1,20 +1,38 @@
 #pragma once
 
+#include "audio_engine.h"
+#include "clip_library.h"
 #include "config.h"
 #include "recorder_engine.h"
+#include "ui_icons.h"
 #include "video_pipeline.h"
 
 #include <windows.h>
+#include <d2d1.h>
+#include <dwrite.h>
+#include <wincodec.h>
+#include <wrl/client.h>
 
+#include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace clipper {
 
+enum class SettingsTab : int {
+    Clips = 0,
+    Capture = 1,
+    Audio = 2,
+    Hotkeys = 3
+};
+
 struct SettingsStatusInfo {
     EngineState state = EngineState::Stopped;
     VideoStats video{};
+    AudioStats audio{};
     std::string lastError;
 };
 
@@ -29,13 +47,17 @@ struct SettingsCallbacks {
 
 class SettingsWindow {
 public:
+    static constexpr UINT kWmSelectTab = WM_APP + 50;
+
     explicit SettingsWindow(SettingsCallbacks callbacks);
     ~SettingsWindow();
 
     SettingsWindow(const SettingsWindow&) = delete;
     SettingsWindow& operator=(const SettingsWindow&) = delete;
 
-    void ShowOrFocus(HINSTANCE hInst, HICON icon);
+    void ShowOrFocus(HINSTANCE hInst, HICON icon, SettingsTab initialTab = SettingsTab::Clips);
+    void SetActiveTab(SettingsTab tab);
+    void NotifyClipsChanged();
     void CloseIfOpen();
     bool IsOpen() const { return hwnd_ != nullptr; }
     void RefreshStatus();
@@ -43,108 +65,152 @@ public:
     HWND Handle() const { return hwnd_; }
 
 private:
-    enum ControlId : int {
-        kIdBtnSaveReplay = 2001,
-        kIdComboMonitor = 2002,
-        kIdBtnRefreshMonitors = 2003,
-        kIdSegFps = 2004,
-        kIdComboSeconds = 2005,
-        kIdComboBitrate = 2006,
-        kIdToggleDesktopAudio = 2007,
-        kIdToggleMicAudio = 2008,
-        kIdToggleChime = 2009,
-        kIdBtnHotkey = 2010,
-        kIdBtnResetHotkey = 2011,
-        kIdEditOutputDir = 2012,
-        kIdBtnBrowseDir = 2013,
-        kIdBtnOpenDir = 2014,
-        kIdBtnHideTray = 2015,
-        kIdBtnQuit = 2016,
-        kIdBtnApply = 2017,
+    enum class HitAction {
+        None = 0,
+        SelectTab,
+        SidebarSaveClip,
+        SidebarHide,
+        SidebarQuit,
+        ClipsRefresh,
+        ClipsOpenFolder,
+        ClipPlay,
+        ClipShowInFolder,
+        ClipDelete,
+        EmptyGoCapture,
+        RefreshMonitors,
+        SelectMonitor,
+        PresetCompetitive,
+        PresetHigh,
+        PresetCompact,
+        SelectFps,
+        SelectSeconds,
+        BitrateSlider,
+        ToggleDesktopAudio,
+        ToggleMicAudio,
+        ToggleChime,
+        HotkeyCaptureBtn,
+        HotkeyResetBtn,
+        BrowseFolder,
+        OpenFolderBtn,
+        ApplyChanges,
+        DiscardChanges,
+    };
+
+    struct HitKey {
+        HitAction action = HitAction::None;
+        int param = 0;
+
+        bool operator==(const HitKey&) const = default;
+    };
+
+    struct HitTarget {
+        D2D1_RECT_F rect{};
+        HitKey key{};
+        bool inViewport = false;
+    };
+
+    struct ThumbEntry {
+        bool attempted = false;
+        Microsoft::WRL::ComPtr<ID2D1Bitmap> bmp;
     };
 
     static LRESULT CALLBACK StaticWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-    static LRESULT CALLBACK HotkeySubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
-                                               UINT_PTR subId, DWORD_PTR refData);
-    static LRESULT CALLBACK ButtonHoverProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
-                                            UINT_PTR subId, DWORD_PTR refData);
-    static LRESULT CALLBACK ComboBorderProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
-                                            UINT_PTR subId, DWORD_PTR refData);
-    static LRESULT CALLBACK SegFpsKeyProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
-                                          UINT_PTR subId, DWORD_PTR refData);
-
     LRESULT WndProc(UINT msg, WPARAM wParam, LPARAM lParam);
-    int S(int logicalPx) const;
 
-    void CreateControls();
-    void PopulateFromConfig(const AppConfig& cfg);
-    void PopulateMonitors(uint32_t selectedIndex);
-    void PopulateNumericCombo(HWND combo, const std::vector<uint32_t>& presets,
-                              uint32_t currentVal, const wchar_t* suffix);
-    uint32_t SelectedComboData(HWND combo, uint32_t fallback) const;
-    std::wstring ReadExpandedEditFolder() const;
-    AppConfig GatherEditedConfig() const;
+    bool EnsureDeviceIndependentResources();
+    bool EnsureDeviceResources();
+    bool EnsureBackbuffer(int w, int h);
+    void DestroyBackbuffer();
+    void DiscardDeviceResources();
+    void DestroyAllResources();
 
-    void UpdateRamEstimate();
+    void ReloadConfigState();
+    void ReloadMonitors();
+    void ReloadClips();
+    void StepThumbnailBatch(size_t maxCount, bool invalidateOnLoad);
+    void InvalidateWindow();
+
+    void RenderToDC(HDC targetHdc);
+    void DrawSidebar(D2D1_RECT_F clipSidebar);
+    void DrawTopHeader();
+    void DrawClipsTab(float contentX, float contentW, float& yCursor);
+    void DrawCaptureTab(float contentX, float contentW, float& yCursor);
+    void DrawAudioTab(float contentX, float contentW, float& yCursor);
+    void DrawHotkeysTab(float contentX, float contentW, float& yCursor);
+    void DrawBottomBar();
+
+    void DrawTextLine(std::wstring_view text, IDWriteTextFormat* fmt,
+                      D2D1_RECT_F rect, D2D1_COLOR_F color,
+                      DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING,
+                      DWRITE_PARAGRAPH_ALIGNMENT valign = DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    void DrawPillButton(D2D1_RECT_F rect, const wchar_t* label, const ui::IconId* icon,
+                        HitKey key, bool primary, bool subtleDanger = false);
+    void DrawToggleSwitch(D2D1_RECT_F rect, bool on, bool hovered);
+    float DrawKeycapGroup(float startX, float centerY, const std::string& display,
+                          bool darkStyle, float maxRight = 0.0f);
+
+    const HitTarget* HitTestDip(float dipX, float dipY) const;
+    void ExecuteHit(const HitKey& key, float dipX);
+    void UpdateBitrateFromDip(float dipX);
     void BrowseForOutputFolder();
+    void OpenFolderInExplorer(const std::wstring& dir);
+    void RevealFileInExplorer(const std::wstring& fullPath);
+    void DeleteClipToRecycleBin(size_t clipIndex);
     void BeginHotkeyCapture();
     void EndHotkeyCapture(bool cancelMsg);
-
-    void DrawRowContainer(HDC hdc, RECT rc, const std::vector<int>& dividerY) const;
-    void DrawButtonItem(const DRAWITEMSTRUCT* dis) const;
-    void DrawSegFpsItem(const DRAWITEMSTRUCT* dis) const;
-    void DrawHotkeyItem(const DRAWITEMSTRUCT* dis) const;
-    void DrawToggleItem(const DRAWITEMSTRUCT* dis, bool checked) const;
-    void DrawComboItem(const DRAWITEMSTRUCT* dis) const;
-    void DestroyGdiResources();
+    bool HandleHotkeyKeyDown(UINT vk, LPARAM lParam);
+    bool IsDirty() const;
+    void ComputeRamEstimate(double& outMb, float& outRatio, bool& outOverCap) const;
 
     SettingsCallbacks callbacks_;
     HWND hwnd_ = nullptr;
     int dpi_ = 96;
+    SettingsTab activeTab_ = SettingsTab::Clips;
 
-    HFONT fontRegular_ = nullptr;
-    HFONT fontBold_ = nullptr;
-    HFONT fontSection_ = nullptr;
-    HFONT fontDesc_ = nullptr;
-    HFONT fontKeycap_ = nullptr;
-    HBRUSH brushBg_ = nullptr;
-    HBRUSH brushCard_ = nullptr;
-    HBRUSH brushInput_ = nullptr;
+    Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
+    Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
+    Microsoft::WRL::ComPtr<IWICImagingFactory> wicFactory_;
+    Microsoft::WRL::ComPtr<ID2D1StrokeStyle> roundStroke_;
 
-    HWND comboMonitor_ = nullptr;
-    HWND btnRefresh_ = nullptr;
-    HWND btnSegFps_ = nullptr;
-    HWND comboSeconds_ = nullptr;
-    HWND comboBitrate_ = nullptr;
-    HWND btnDesktopAudio_ = nullptr;
-    HWND btnMicAudio_ = nullptr;
-    HWND btnSaveChime_ = nullptr;
-    HWND btnHotkey_ = nullptr;
-    HWND btnResetHotkey_ = nullptr;
-    HWND editOutputDir_ = nullptr;
-    HWND btnBrowse_ = nullptr;
-    HWND btnOpen_ = nullptr;
-    HWND btnSaveReplay_ = nullptr;
-    HWND btnHide_ = nullptr;
-    HWND btnQuit_ = nullptr;
-    HWND btnApply_ = nullptr;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtBrand_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtPageTitle_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtSection_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtBody_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtBodySemi_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtSmall_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtSmallWrap_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtMicro_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtMono_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtKeycap_;
 
+    Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> rt_;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush_;
+    HDC memDC_ = nullptr;
+    HBITMAP memBmp_ = nullptr;
+    HGDIOBJ oldBmp_ = nullptr;
+    int memW_ = 0;
+    int memH_ = 0;
+
+    AppConfig appliedCfg_{};
+    AppConfig editedCfg_{};
+    SettingsStatusInfo status_{};
     std::vector<MonitorInfo> monitors_;
-    HotkeySpec pendingHotkey_{};
-    uint32_t selectedFps_ = 60;
-    bool desktopAudio_ = true;
-    bool micAudio_ = true;
-    bool saveChime_ = true;
-    bool recordingHotkey_ = false;
-    HWND hoveredBtn_ = nullptr;
-    int hoveredSeg_ = -1;
+    std::vector<ClipEntry> clips_;
+    uint64_t totalClipsBytes_ = 0;
+    std::unordered_map<std::wstring, ThumbEntry> thumbCache_;
 
-    std::wstring statusText_ = L"Starting...";
-    COLORREF statusColor_ = RGB(245, 158, 11);
-    std::wstring ramText_;
-    COLORREF ramColor_ = RGB(138, 143, 152);
+    std::vector<HitTarget> hitTargets_;
+    HitKey hoveredHit_{};
+    bool trackingMouse_ = false;
+    bool draggingSlider_ = false;
+    D2D1_RECT_F sliderTrackRect_{};
+    float scrollY_ = 0.0f;
+    float maxScroll_ = 0.0f;
+    bool recordingHotkey_ = false;
+
     std::wstring feedbackText_;
-    COLORREF feedbackColor_ = RGB(138, 143, 152);
+    bool feedbackIsError_ = false;
+    uint64_t feedbackExpiresMs_ = 0;
 };
 
 }

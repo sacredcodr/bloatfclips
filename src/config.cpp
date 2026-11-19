@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -454,7 +453,7 @@ ConfigParseResult ApplyCliOverrides(int argc, wchar_t** argv, AppConfig base) {
             if (eq == std::string::npos) continue;
             std::string key = ToLower(body.substr(0, eq));
             std::string val = body.substr(eq + 1);
-            if (key == "ready-event" || key == "out" || key == "runs") continue;
+            if (key == "ready-event" || key == "out" || key == "runs" || key == "page") continue;
             if (key == "monitor") key = "monitor_index";
             else if (key == "bitrate") key = "bitrate_mbps";
             else if (key == "seconds") key = "replay_seconds";
