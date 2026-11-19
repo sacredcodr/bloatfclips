@@ -111,7 +111,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: bloatfclips-installer
-          path: dist/*.exe
+          path: dist/*
           if-no-files-found: error
 
   release:
@@ -134,4 +134,4 @@ jobs:
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --title "bloatfclips ${GITHUB_REF_NAME#v}" --generate-notes
           fi
-          gh release upload "$GITHUB_REF_NAME" dist/*.exe --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber

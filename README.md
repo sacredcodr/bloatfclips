@@ -54,6 +54,10 @@ bloatfclips starts recording right away. Its icon appears in the system tray and
 
 **Uninstalling:** go to **Settings → Apps → Installed apps → bloatfclips → Uninstall**. Uninstalling closes bloatfclips if it is running and removes the app, its settings, and the autostart entry. Your saved clips stay in your Videos folder.
 
+### Portable (ZIP)
+
+Prefer no installer? Download `bloatfclips-<version>-portable.zip` from the Releases page, unzip it anywhere you can write to (for example `Documents`), and run `bloatfclips.exe`. Settings are saved next to the exe. To remove it, exit bloatfclips from the tray and delete the folder.
+
 ## Using bloatfclips
 
 ### Window

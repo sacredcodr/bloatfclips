@@ -33,6 +33,16 @@ $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
           "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $iscc) { throw 'Inno Setup 6 not found. Install it with: winget install JRSoftware.InnoSetup' }
 
-& $iscc /Q "/DSourceExe=$((Resolve-Path $Exe).Path)" (Join-Path $root 'installer\bloatfclips.iss')
+$exePath = (Resolve-Path $Exe).Path
+& $iscc /Q "/DSourceExe=$exePath" (Join-Path $root 'installer\bloatfclips.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compile failed' }
-Get-ChildItem (Join-Path $root 'dist\*.exe') | Sort-Object LastWriteTime | Select-Object -Last 1 FullName, Length
+
+# Portable build: just the exe in a ZIP. Unzip anywhere writable and run; settings go next to it.
+$version = (Get-Item $exePath).VersionInfo.ProductVersion
+$stage = Join-Path $root 'build-release\portable\bloatfclips'
+Remove-Item -Recurse -Force (Split-Path $stage) -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $stage | Out-Null
+Copy-Item $exePath (Join-Path $stage 'bloatfclips.exe')
+Compress-Archive -Path $stage -DestinationPath (Join-Path $root "dist\bloatfclips-$version-portable.zip") -Force
+
+Get-ChildItem (Join-Path $root 'dist') | Select-Object Name, Length
