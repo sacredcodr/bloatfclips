@@ -9,7 +9,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
-#include <array>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 
@@ -22,22 +22,31 @@ namespace {
 constexpr wchar_t kSettingsWndClass[] = L"ClipperSettingsWindow";
 constexpr UINT_PTR kStatusTimerId = 1;
 
-constexpr COLORREF kColBg = RGB(24, 26, 31);
-constexpr COLORREF kColCard = RGB(33, 36, 43);
-constexpr COLORREF kColCardBorder = RGB(48, 53, 64);
-constexpr COLORREF kColInput = RGB(42, 46, 55);
-constexpr COLORREF kColInputBorder = RGB(62, 68, 82);
-constexpr COLORREF kColHover = RGB(54, 60, 72);
-constexpr COLORREF kColPressed = RGB(35, 39, 47);
-constexpr COLORREF kColAccent = RGB(59, 130, 246);
-constexpr COLORREF kColAccentHover = RGB(79, 145, 252);
-constexpr COLORREF kColAccentPressed = RGB(37, 99, 235);
-constexpr COLORREF kColText = RGB(237, 240, 245);
-constexpr COLORREF kColMuted = RGB(154, 163, 178);
+constexpr int kClientW = 560;
+constexpr int kClientH = 688;
+
+constexpr COLORREF kColBg = RGB(14, 15, 18);
+constexpr COLORREF kColCard = RGB(22, 23, 27);
+constexpr COLORREF kColCardBorder = RGB(38, 40, 48);
+constexpr COLORREF kColDivider = RGB(34, 36, 44);
+constexpr COLORREF kColInput = RGB(30, 32, 38);
+constexpr COLORREF kColInputBorder = RGB(48, 51, 61);
+constexpr COLORREF kColHover = RGB(40, 43, 52);
+constexpr COLORREF kColPressed = RGB(26, 28, 34);
+constexpr COLORREF kColSegTrack = RGB(28, 30, 36);
+constexpr COLORREF kColSegActive = RGB(52, 56, 68);
+constexpr COLORREF kColSegActiveBorder = RGB(76, 82, 98);
+constexpr COLORREF kColKeycap = RGB(35, 38, 46);
+constexpr COLORREF kColKeycapBorder = RGB(62, 66, 78);
+constexpr COLORREF kColAccent = RGB(94, 106, 210);
+constexpr COLORREF kColAccentHover = RGB(110, 122, 224);
+constexpr COLORREF kColAccentPressed = RGB(78, 88, 186);
+constexpr COLORREF kColText = RGB(238, 240, 245);
+constexpr COLORREF kColMuted = RGB(138, 143, 152);
 constexpr COLORREF kColGreen = RGB(34, 197, 94);
 constexpr COLORREF kColAmber = RGB(245, 158, 11);
 constexpr COLORREF kColRed = RGB(239, 68, 68);
-constexpr COLORREF kColTrackOff = RGB(60, 66, 78);
+constexpr COLORREF kColTrackOff = RGB(50, 54, 66);
 
 void InitCommonControlsOnce() {
     static bool initialized = false;
@@ -52,6 +61,69 @@ void InitCommonControlsOnce() {
 
 bool ContainsValue(const std::vector<uint32_t>& v, uint32_t val) {
     return std::find(v.begin(), v.end(), val) != v.end();
+}
+
+uint32_t BlendChannel(uint32_t bg, uint32_t fg, double a) {
+    return static_cast<uint32_t>(std::clamp(std::lround(bg + (fg - bg) * a), 0L, 255L));
+}
+
+void BlitSmoothCircle(HDC hdc, int x, int y, int diameter, COLORREF fg, COLORREF bg) {
+    if (diameter <= 0) return;
+    std::vector<uint32_t> px(static_cast<size_t>(diameter) * static_cast<size_t>(diameter), 0);
+    double center = (static_cast<double>(diameter) - 1.0) * 0.5;
+    double radius = static_cast<double>(diameter) * 0.5 - 0.5;
+
+    uint32_t fgR = GetRValue(fg), fgG = GetGValue(fg), fgB = GetBValue(fg);
+    uint32_t bgR = GetRValue(bg), bgG = GetGValue(bg), bgB = GetBValue(bg);
+
+    for (int py = 0; py < diameter; ++py) {
+        for (int pxX = 0; pxX < diameter; ++pxX) {
+            double dx = static_cast<double>(pxX) - center;
+            double dy = static_cast<double>(py) - center;
+            double dist = std::sqrt(dx * dx + dy * dy);
+            double cov = std::clamp(radius + 0.5 - dist, 0.0, 1.0);
+            uint32_t r = BlendChannel(bgR, fgR, cov);
+            uint32_t g = BlendChannel(bgG, fgG, cov);
+            uint32_t b = BlendChannel(bgB, fgB, cov);
+            px[static_cast<size_t>(py) * diameter + pxX] = (r << 16) | (g << 8) | b;
+        }
+    }
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = diameter;
+    bmi.bmiHeader.biHeight = -diameter;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    SetDIBitsToDevice(hdc, x, y, static_cast<DWORD>(diameter), static_cast<DWORD>(diameter),
+        0, 0, 0, static_cast<UINT>(diameter), px.data(), &bmi, DIB_RGB_COLORS);
+}
+
+void DrawFillRoundRect(HDC hdc, RECT rc, int radius, COLORREF fill, COLORREF border) {
+    HPEN pen = CreatePen(PS_SOLID, 1, border);
+    HBRUSH br = CreateSolidBrush(fill);
+    HGDIOBJ oldPen = SelectObject(hdc, pen);
+    HGDIOBJ oldBr = SelectObject(hdc, br);
+    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, radius, radius);
+    SelectObject(hdc, oldBr);
+    SelectObject(hdc, oldPen);
+    DeleteObject(br);
+    DeleteObject(pen);
+}
+
+std::vector<std::wstring> SplitKeycaps(const std::string& display) {
+    std::vector<std::wstring> parts;
+    std::wstring wide = Utf8ToWide(display);
+    size_t start = 0;
+    while (start <= wide.size()) {
+        size_t plus = wide.find(L'+', start);
+        std::wstring tok = (plus == std::wstring::npos) ? wide.substr(start) : wide.substr(start, plus - start);
+        if (!tok.empty()) parts.push_back(std::move(tok));
+        if (plus == std::wstring::npos) break;
+        start = plus + 1;
+    }
+    return parts;
 }
 
 }
@@ -103,7 +175,7 @@ void SettingsWindow::ShowOrFocus(HINSTANCE hInst, HICON icon) {
     }
 
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
-    RECT wr{ 0, 0, S(540), S(508) };
+    RECT wr{ 0, 0, S(kClientW), S(kClientH) };
     AdjustWindowRectExForDpi(&wr, style, FALSE, 0, static_cast<UINT>(dpi_));
     int winW = wr.right - wr.left;
     int winH = wr.bottom - wr.top;
@@ -140,13 +212,12 @@ void SettingsWindow::RefreshStatus() {
     COLORREF nextColor = kColMuted;
 
     if (st.state == EngineState::Running) {
-        uint32_t fpsVal = SelectedComboData(comboFps_, 60);
         wchar_t buf[128] = {};
         if (st.video.width > 0 && st.video.height > 0) {
             std::swprintf(buf, sizeof(buf) / sizeof(wchar_t),
-                L"Recording  %ux%u @ %u fps", st.video.width, st.video.height, fpsVal);
+                L"Recording  %ux%u at %u fps", st.video.width, st.video.height, selectedFps_);
         } else {
-            std::swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"Recording");
+            std::swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"Recording at %u fps", selectedFps_);
         }
         nextText = buf;
         nextColor = kColGreen;
@@ -170,7 +241,7 @@ void SettingsWindow::RefreshStatus() {
     if (nextText != statusText_ || nextColor != statusColor_) {
         statusText_ = std::move(nextText);
         statusColor_ = nextColor;
-        RECT rc{ 0, 0, S(400), S(52) };
+        RECT rc{ S(18), S(14), S(416), S(50) };
         InvalidateRect(hwnd_, &rc, FALSE);
     }
 }
@@ -179,7 +250,7 @@ void SettingsWindow::ShowFeedback(const std::wstring& text, bool isError) {
     feedbackText_ = text;
     feedbackColor_ = isError ? kColRed : kColGreen;
     if (hwnd_) {
-        RECT rc{ 0, S(412), S(540), S(450) };
+        RECT rc{ S(18), S(612), S(544), S(636) };
         InvalidateRect(hwnd_, &rc, FALSE);
     }
 }
@@ -259,8 +330,19 @@ LRESULT CALLBACK SettingsWindow::ButtonHoverProc(HWND hwnd, UINT msg, WPARAM wPa
     }
     if (self) {
         if (msg == WM_MOUSEMOVE) {
-            if (self->hoveredBtn_ != hwnd) {
-                self->hoveredBtn_ = hwnd;
+            bool redraw = (self->hoveredBtn_ != hwnd);
+            self->hoveredBtn_ = hwnd;
+            if (hwnd == self->btnSegFps_) {
+                RECT rc{};
+                GetClientRect(hwnd, &rc);
+                int xPos = static_cast<short>(LOWORD(lParam));
+                int nextSeg = (xPos < rc.right / 2) ? 0 : 1;
+                if (nextSeg != self->hoveredSeg_) {
+                    self->hoveredSeg_ = nextSeg;
+                    redraw = true;
+                }
+            }
+            if (redraw) {
                 TRACKMOUSEEVENT tme{ sizeof(tme), TME_LEAVE, hwnd, 0 };
                 TrackMouseEvent(&tme);
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -268,8 +350,65 @@ LRESULT CALLBACK SettingsWindow::ButtonHoverProc(HWND hwnd, UINT msg, WPARAM wPa
         } else if (msg == WM_MOUSELEAVE) {
             if (self->hoveredBtn_ == hwnd) {
                 self->hoveredBtn_ = nullptr;
+                if (hwnd == self->btnSegFps_) self->hoveredSeg_ = -1;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
+        }
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+LRESULT CALLBACK SettingsWindow::ComboBorderProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                                 UINT_PTR subId, DWORD_PTR) {
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, &SettingsWindow::ComboBorderProc, subId);
+        return DefSubclassProc(hwnd, msg, wParam, lParam);
+    }
+    LRESULT lr = DefSubclassProc(hwnd, msg, wParam, lParam);
+    if (msg == WM_PAINT) {
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+        HDC hdc = GetDC(hwnd);
+        if (hdc) {
+            HPEN bgPen = CreatePen(PS_SOLID, 2, kColInput);
+            HGDIOBJ oldPen = SelectObject(hdc, bgPen);
+            HGDIOBJ oldBr = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            Rectangle(hdc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1);
+            SelectObject(hdc, oldPen);
+            DeleteObject(bgPen);
+
+            COLORREF edge = (GetFocus() == hwnd) ? kColAccent : kColInputBorder;
+            HPEN borderPen = CreatePen(PS_SOLID, 1, edge);
+            oldPen = SelectObject(hdc, borderPen);
+            Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+            SelectObject(hdc, oldBr);
+            SelectObject(hdc, oldPen);
+            DeleteObject(borderPen);
+            ReleaseDC(hwnd, hdc);
+        }
+    }
+    return lr;
+}
+
+LRESULT CALLBACK SettingsWindow::SegFpsKeyProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                               UINT_PTR subId, DWORD_PTR refData) {
+    auto* self = reinterpret_cast<SettingsWindow*>(refData);
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, &SettingsWindow::SegFpsKeyProc, subId);
+        return DefSubclassProc(hwnd, msg, wParam, lParam);
+    }
+    if (self && msg == WM_KEYDOWN) {
+        if (wParam == VK_LEFT && self->selectedFps_ != 30) {
+            self->selectedFps_ = 30;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            self->UpdateRamEstimate();
+            return 0;
+        }
+        if (wParam == VK_RIGHT && self->selectedFps_ != 60) {
+            self->selectedFps_ = 60;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            self->UpdateRamEstimate();
+            return 0;
         }
     }
     return DefSubclassProc(hwnd, msg, wParam, lParam);
@@ -278,15 +417,21 @@ LRESULT CALLBACK SettingsWindow::ButtonHoverProc(HWND hwnd, UINT msg, WPARAM wPa
 LRESULT SettingsWindow::WndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
-            fontRegular_ = CreateFontW(-S(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            fontRegular_ = CreateFontW(-S(13), 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                 DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-            fontBold_ = CreateFontW(-S(14), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            fontBold_ = CreateFontW(-S(13), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                 DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-            fontSmall_ = CreateFontW(-S(11), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            fontSection_ = CreateFontW(-S(12), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                 DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+            fontDesc_ = CreateFontW(-S(11), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+            fontKeycap_ = CreateFontW(-S(11), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                FIXED_PITCH | FF_MODERN, L"Consolas");
             brushBg_ = CreateSolidBrush(kColBg);
             brushCard_ = CreateSolidBrush(kColCard);
             brushInput_ = CreateSolidBrush(kColInput);
@@ -310,86 +455,88 @@ LRESULT SettingsWindow::WndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
             GetClientRect(hwnd_, &client);
             FillRect(hdc, &client, brushBg_);
 
-            DrawCard(hdc, RECT{ S(16), S(54), S(524), S(246) });
-            DrawCard(hdc, RECT{ S(16), S(260), S(524), S(406) });
+            RECT statusPill{ S(20), S(15), S(412), S(45) };
+            DrawFillRoundRect(hdc, statusPill, S(8), kColCard, kColCardBorder);
+            BlitSmoothCircle(hdc, S(31), S(26), S(8), statusColor_, kColCard);
 
             SetBkMode(hdc, TRANSPARENT);
-
-            HGDIOBJ dotBrush = CreateSolidBrush(statusColor_);
-            HGDIOBJ oldPen = SelectObject(hdc, GetStockObject(NULL_PEN));
-            HGDIOBJ oldBrush = SelectObject(hdc, dotBrush);
-            Ellipse(hdc, S(18), S(22), S(28), S(32));
-            SelectObject(hdc, oldBrush);
-            SelectObject(hdc, oldPen);
-            DeleteObject(dotBrush);
-
             HGDIOBJ oldFont = SelectObject(hdc, fontBold_);
             SetTextColor(hdc, kColText);
-            RECT statusRc{ S(36), S(16), S(398), S(40) };
+            RECT statusRc{ S(46), S(15), S(402), S(45) };
             DrawTextW(hdc, statusText_.c_str(), -1, &statusRc,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
-            SelectObject(hdc, fontSmall_);
+            SelectObject(hdc, fontSection_);
             SetTextColor(hdc, kColMuted);
-            RECT h1{ S(30), S(64), S(400), S(82) };
-            DrawTextW(hdc, L"CAPTURE & VIDEO", -1, &h1, DT_LEFT | DT_SINGLELINE);
-            RECT h2{ S(30), S(270), S(400), S(288) };
-            DrawTextW(hdc, L"HOTKEY & CLIPS FOLDER", -1, &h2, DT_LEFT | DT_SINGLELINE);
+            RECT sec1{ S(22), S(60), S(400), S(80) };
+            DrawTextW(hdc, L"Capture", -1, &sec1, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            RECT sec2{ S(22), S(304), S(400), S(324) };
+            DrawTextW(hdc, L"Audio & alerts", -1, &sec2, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            RECT sec3{ S(22), S(480), S(400), S(500) };
+            DrawTextW(hdc, L"Shortcut & storage", -1, &sec3, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
-            SelectObject(hdc, fontRegular_);
-            SetTextColor(hdc, kColMuted);
-            struct LabelPos { int x; int y; int w; int h; const wchar_t* text; };
-            const LabelPos labels[] = {
-                { 30, 90, 96, 28, L"Screen" },
-                { 30, 128, 96, 28, L"Frame Rate" },
-                { 266, 128, 64, 28, L"Replay" },
-                { 30, 166, 96, 28, L"Bitrate" },
-                { 30, 296, 96, 30, L"Save Hotkey" },
-                { 30, 338, 96, 28, L"Clips Folder" },
+            DrawRowContainer(hdc, RECT{ S(20), S(84), S(540), S(292) }, { S(136), S(188), S(240) });
+            DrawRowContainer(hdc, RECT{ S(20), S(328), S(540), S(466) }, { S(374), S(420) });
+            DrawRowContainer(hdc, RECT{ S(20), S(504), S(540), S(606) }, { S(555) });
+
+            struct RowText {
+                int yTop;
+                int rowH;
+                int rightLimit;
+                const wchar_t* title;
+                const wchar_t* desc;
+                COLORREF descColor;
             };
-            for (const auto& lbl : labels) {
-                RECT lrc{ S(lbl.x), S(lbl.y), S(lbl.x + lbl.w), S(lbl.y + lbl.h) };
-                DrawTextW(hdc, lbl.text, -1, &lrc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            const RowText rows[] = {
+                { 84, 52, 198, L"Display", L"Monitor captured via DXGI", kColMuted },
+                { 136, 52, 372, L"Frame rate", L"Capture and encode cadence", kColMuted },
+                { 188, 52, 396, L"Replay window", ramText_.c_str(), ramColor_ },
+                { 240, 52, 396, L"Video bitrate", L"NVENC low-latency VBR target", kColMuted },
+                { 328, 46, 470, L"Desktop audio", L"WASAPI system loopback", kColMuted },
+                { 374, 46, 470, L"Microphone", L"Mixed into the replay audio track", kColMuted },
+                { 420, 46, 470, L"Save chime", L"Plays a tone when a clip saves", kColMuted },
+                { 504, 51, 244, L"Save replay hotkey", L"Click keycaps to bind", kColMuted },
+                { 555, 51, 182, L"Clips folder", L"Fast-start MP4 destination", kColMuted },
+            };
+
+            for (const auto& r : rows) {
+                int midY = r.yTop + r.rowH / 2;
+                SelectObject(hdc, fontBold_);
+                SetTextColor(hdc, kColText);
+                RECT tRc{ S(36), S(r.yTop + 6), S(r.rightLimit), S(midY + 2) };
+                DrawTextW(hdc, r.title, -1, &tRc,
+                    DT_LEFT | DT_BOTTOM | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+                SelectObject(hdc, fontDesc_);
+                SetTextColor(hdc, r.descColor);
+                RECT dRc{ S(36), S(midY + 2), S(r.rightLimit), S(r.yTop + r.rowH - 5) };
+                DrawTextW(hdc, r.desc, -1, &dRc,
+                    DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
             }
 
-            SetTextColor(hdc, ramColor_);
-            RECT ramRc{ S(266), S(166), S(510), S(194) };
-            DrawTextW(hdc, ramText_.c_str(), -1, &ramRc,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            RECT editBox{ S(190), S(567), S(406), S(595) };
+            DrawFillRoundRect(hdc, editBox, S(6), kColInput, kColInputBorder);
 
-            SetTextColor(hdc, kColMuted);
-            RECT hintRc{ S(30), S(374), S(510), S(396) };
-            DrawTextW(hdc, L"Closing this window keeps Clipper active in your system tray.", -1, &hintRc,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
+            SelectObject(hdc, fontDesc_);
             if (!feedbackText_.empty()) {
                 SelectObject(hdc, fontBold_);
                 SetTextColor(hdc, feedbackColor_);
-                RECT fbRc{ S(18), S(416), S(522), S(444) };
+                RECT fbRc{ S(22), S(612), S(538), S(634) };
                 DrawTextW(hdc, feedbackText_.c_str(), -1, &fbRc,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            } else {
+                SetTextColor(hdc, kColMuted);
+                RECT hintRc{ S(22), S(612), S(538), S(634) };
+                DrawTextW(hdc, L"Closing this window keeps Clipper running in your system tray.", -1, &hintRc,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
             }
-
-            HPEN editPen = CreatePen(PS_SOLID, 1, kColInputBorder);
-            oldPen = SelectObject(hdc, editPen);
-            oldBrush = SelectObject(hdc, brushInput_);
-            RoundRect(hdc, S(130), S(338), S(358), S(366), S(6), S(6));
-            SelectObject(hdc, oldBrush);
-            SelectObject(hdc, oldPen);
-            DeleteObject(editPen);
 
             SelectObject(hdc, oldFont);
             EndPaint(hwnd_, &ps);
             return 0;
         }
 
-        case WM_CTLCOLOREDIT: {
-            HDC hdc = reinterpret_cast<HDC>(wParam);
-            SetTextColor(hdc, kColText);
-            SetBkColor(hdc, kColInput);
-            return reinterpret_cast<LRESULT>(brushInput_);
-        }
-
+        case WM_CTLCOLOREDIT:
         case WM_CTLCOLORLISTBOX: {
             HDC hdc = reinterpret_cast<HDC>(wParam);
             SetTextColor(hdc, kColText);
@@ -400,7 +547,7 @@ LRESULT SettingsWindow::WndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_MEASUREITEM: {
             auto* mis = reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
             if (mis->CtlType == ODT_COMBOBOX) {
-                mis->itemHeight = static_cast<UINT>(S(24));
+                mis->itemHeight = static_cast<UINT>(S(22));
                 return TRUE;
             }
             break;
@@ -414,14 +561,20 @@ LRESULT SettingsWindow::WndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             if (dis->CtlType == ODT_BUTTON) {
                 switch (dis->CtlID) {
+                    case kIdSegFps:
+                        DrawSegFpsItem(dis);
+                        return TRUE;
+                    case kIdBtnHotkey:
+                        DrawHotkeyItem(dis);
+                        return TRUE;
                     case kIdToggleDesktopAudio:
-                        DrawToggleItem(dis, desktopAudio_, L"Desktop Audio");
+                        DrawToggleItem(dis, desktopAudio_);
                         return TRUE;
                     case kIdToggleMicAudio:
-                        DrawToggleItem(dis, micAudio_, L"Microphone");
+                        DrawToggleItem(dis, micAudio_);
                         return TRUE;
                     case kIdToggleChime:
-                        DrawToggleItem(dis, saveChime_, L"Save Chime");
+                        DrawToggleItem(dis, saveChime_);
                         return TRUE;
                     default:
                         DrawButtonItem(dis);
@@ -451,6 +604,24 @@ LRESULT SettingsWindow::WndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
                         uint32_t cur = SelectedComboData(comboMonitor_, 0);
                         PopulateMonitors(cur);
                         ShowFeedback(L"Display list refreshed.", false);
+                        return 0;
+                    }
+                    case kIdSegFps: {
+                        POINT pt{};
+                        if (GetCursorPos(&pt)) {
+                            ScreenToClient(btnSegFps_, &pt);
+                            RECT rc{};
+                            GetClientRect(btnSegFps_, &rc);
+                            if (PtInRect(&rc, pt)) {
+                                selectedFps_ = (pt.x < rc.right / 2) ? 30u : 60u;
+                            } else {
+                                selectedFps_ = (selectedFps_ == 30u) ? 60u : 30u;
+                            }
+                        } else {
+                            selectedFps_ = (selectedFps_ == 30u) ? 60u : 30u;
+                        }
+                        InvalidateRect(btnSegFps_, nullptr, FALSE);
+                        UpdateRamEstimate();
                         return 0;
                     }
                     case kIdToggleDesktopAudio:
@@ -528,6 +699,7 @@ LRESULT SettingsWindow::WndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
             KillTimer(hwnd_, kStatusTimerId);
             DestroyGdiResources();
             hoveredBtn_ = nullptr;
+            hoveredSeg_ = -1;
             hwnd_ = nullptr;
             return 0;
         }
@@ -545,9 +717,10 @@ void SettingsWindow::CreateControls() {
             S(x), S(y), S(w), S(220),
             hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), nullptr, nullptr);
         SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(fontRegular_), TRUE);
-        SendMessageW(h, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), S(24));
+        SendMessageW(h, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), S(22));
         SendMessageW(h, CB_SETITEMHEIGHT, 0, S(24));
         SetWindowTheme(h, L"DarkMode_CFD", nullptr);
+        SetWindowSubclass(h, &SettingsWindow::ComboBorderProc, 3, reinterpret_cast<DWORD_PTR>(this));
         return h;
     };
 
@@ -563,36 +736,38 @@ void SettingsWindow::CreateControls() {
         return btn;
     };
 
-    btnSaveReplay_ = createBtn(kIdBtnSaveReplay, L"Save Replay", 408, 14, 116, 30);
+    btnSaveReplay_ = createBtn(kIdBtnSaveReplay, L"Save Replay", 424, 15, 116, 30);
 
-    comboMonitor_ = createCombo(kIdComboMonitor, 130, 89, 310);
-    btnRefresh_ = createBtn(kIdBtnRefreshMonitors, L"Refresh", 448, 89, 62, 28);
+    comboMonitor_ = createCombo(kIdComboMonitor, 206, 96, 280);
+    btnRefresh_ = createBtn(kIdBtnRefreshMonitors, L"\x21BB", 492, 96, 32, 28);
 
-    comboFps_ = createCombo(kIdComboFps, 130, 127, 110);
-    comboSeconds_ = createCombo(kIdComboSeconds, 334, 127, 176);
-    comboBitrate_ = createCombo(kIdComboBitrate, 130, 165, 110);
+    btnSegFps_ = createBtn(kIdSegFps, L"", 384, 147, 140, 30);
+    SetWindowSubclass(btnSegFps_, &SettingsWindow::SegFpsKeyProc, 4, reinterpret_cast<DWORD_PTR>(this));
 
-    btnDesktopAudio_ = createBtn(kIdToggleDesktopAudio, L"", 30, 204, 152, 26, false);
-    btnMicAudio_ = createBtn(kIdToggleMicAudio, L"", 198, 204, 148, 26, false);
-    btnSaveChime_ = createBtn(kIdToggleChime, L"", 362, 204, 148, 26, false);
+    comboSeconds_ = createCombo(kIdComboSeconds, 408, 200, 116);
+    comboBitrate_ = createCombo(kIdComboBitrate, 408, 252, 116);
 
-    btnHotkey_ = createBtn(kIdBtnHotkey, L"", 130, 296, 296, 30);
+    btnDesktopAudio_ = createBtn(kIdToggleDesktopAudio, L"", 486, 341, 38, 20, false);
+    btnMicAudio_ = createBtn(kIdToggleMicAudio, L"", 486, 387, 38, 20, false);
+    btnSaveChime_ = createBtn(kIdToggleChime, L"", 486, 433, 38, 20, false);
+
+    btnHotkey_ = createBtn(kIdBtnHotkey, L"", 252, 514, 212, 30);
     SetWindowSubclass(btnHotkey_, &SettingsWindow::HotkeySubclassProc, 2, reinterpret_cast<DWORD_PTR>(this));
-    btnResetHotkey_ = createBtn(kIdBtnResetHotkey, L"Reset", 434, 296, 76, 30);
+    btnResetHotkey_ = createBtn(kIdBtnResetHotkey, L"Reset", 470, 514, 54, 30);
 
     editOutputDir_ = CreateWindowExW(0, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-        S(136), S(343), S(216), S(18),
+        S(196), S(572), S(204), S(18),
         hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdEditOutputDir)), nullptr, nullptr);
     SendMessageW(editOutputDir_, WM_SETFONT, reinterpret_cast<WPARAM>(fontRegular_), TRUE);
     SetWindowTheme(editOutputDir_, L"DarkMode_Explorer", nullptr);
 
-    btnBrowse_ = createBtn(kIdBtnBrowseDir, L"Browse...", 364, 338, 78, 28);
-    btnOpen_ = createBtn(kIdBtnOpenDir, L"Open", 448, 338, 62, 28);
+    btnBrowse_ = createBtn(kIdBtnBrowseDir, L"Browse", 412, 567, 58, 28);
+    btnOpen_ = createBtn(kIdBtnOpenDir, L"Open", 476, 567, 48, 28);
 
-    btnHide_ = createBtn(kIdBtnHideTray, L"Hide to Tray", 16, 458, 114, 34);
-    btnQuit_ = createBtn(kIdBtnQuit, L"Quit", 138, 458, 80, 34);
-    btnApply_ = createBtn(kIdBtnApply, L"Apply", 408, 458, 116, 34);
+    btnHide_ = createBtn(kIdBtnHideTray, L"Hide to Tray", 20, 640, 108, 32);
+    btnQuit_ = createBtn(kIdBtnQuit, L"Quit", 136, 640, 72, 32);
+    btnApply_ = createBtn(kIdBtnApply, L"Apply", 432, 640, 108, 32);
 }
 
 void SettingsWindow::PopulateMonitors(uint32_t selectedIndex) {
@@ -601,7 +776,7 @@ void SettingsWindow::PopulateMonitors(uint32_t selectedIndex) {
 
     if (monitors_.empty()) {
         int idx = static_cast<int>(SendMessageW(comboMonitor_, CB_ADDSTRING, 0,
-            reinterpret_cast<LPARAM>(L"0: Primary Display (fallback)")));
+            reinterpret_cast<LPARAM>(L"1: Primary Display")));
         SendMessageW(comboMonitor_, CB_SETITEMDATA, idx, 0);
         SendMessageW(comboMonitor_, CB_SETCURSEL, 0, 0);
         return;
@@ -664,7 +839,7 @@ uint32_t SettingsWindow::SelectedComboData(HWND combo, uint32_t fallback) const 
 
 void SettingsWindow::PopulateFromConfig(const AppConfig& cfg) {
     PopulateMonitors(cfg.monitorIndex);
-    PopulateNumericCombo(comboFps_, { 30, 60 }, cfg.fps, L" fps");
+    selectedFps_ = (cfg.fps <= 45) ? 30u : 60u;
     PopulateNumericCombo(comboSeconds_, { 15, 30, 45, 60, 90, 120, 180, 300 }, cfg.replaySeconds, L" s");
     PopulateNumericCombo(comboBitrate_, { 5, 10, 15, 20, 25, 30, 40, 50, 60, 80 }, cfg.bitrateMbps, L" Mbps");
 
@@ -676,6 +851,7 @@ void SettingsWindow::PopulateFromConfig(const AppConfig& cfg) {
     std::wstring dirText = cfg.outputDirRaw.empty() ? cfg.outputDir : Utf8ToWide(cfg.outputDirRaw);
     SetWindowTextW(editOutputDir_, dirText.c_str());
 
+    InvalidateRect(btnSegFps_, nullptr, FALSE);
     InvalidateRect(btnDesktopAudio_, nullptr, FALSE);
     InvalidateRect(btnMicAudio_, nullptr, FALSE);
     InvalidateRect(btnSaveChime_, nullptr, FALSE);
@@ -696,7 +872,7 @@ std::wstring SettingsWindow::ReadExpandedEditFolder() const {
 AppConfig SettingsWindow::GatherEditedConfig() const {
     AppConfig cfg = callbacks_.getConfig ? callbacks_.getConfig() : MakeDefaultConfig();
     cfg.monitorIndex = SelectedComboData(comboMonitor_, cfg.monitorIndex);
-    cfg.fps = SelectedComboData(comboFps_, cfg.fps);
+    cfg.fps = selectedFps_;
     cfg.replaySeconds = SelectedComboData(comboSeconds_, cfg.replaySeconds);
     cfg.bitrateMbps = SelectedComboData(comboBitrate_, cfg.bitrateMbps);
     cfg.recordDesktopAudio = desktopAudio_;
@@ -716,7 +892,7 @@ void SettingsWindow::UpdateRamEstimate() {
     AppConfig probe = MakeDefaultConfig();
     probe.bitrateMbps = SelectedComboData(comboBitrate_, 20);
     probe.replaySeconds = SelectedComboData(comboSeconds_, 60);
-    probe.fps = SelectedComboData(comboFps_, 60);
+    probe.fps = selectedFps_;
 
     bool overBudget = (static_cast<uint64_t>(probe.bitrateMbps) * probe.replaySeconds) > kMaxBitrateSecondsBudget;
     AppConfig clamped = probe;
@@ -727,16 +903,16 @@ void SettingsWindow::UpdateRamEstimate() {
     wchar_t buf[96] = {};
     if (overBudget) {
         std::swprintf(buf, sizeof(buf) / sizeof(wchar_t),
-            L"Est. RAM: ~%llu MB (capped at %us)", static_cast<unsigned long long>(mb), clamped.replaySeconds);
+            L"RAM buffer ~%llu MB (capped at %us)", static_cast<unsigned long long>(mb), clamped.replaySeconds);
         ramColor_ = kColAmber;
     } else {
         std::swprintf(buf, sizeof(buf) / sizeof(wchar_t),
-            L"Est. RAM buffer: ~%llu MB", static_cast<unsigned long long>(mb));
+            L"RAM buffer ~%llu MB", static_cast<unsigned long long>(mb));
         ramColor_ = kColMuted;
     }
     ramText_ = buf;
     if (hwnd_) {
-        RECT rc{ S(264), S(162), S(514), S(198) };
+        RECT rc{ S(34), S(214), S(396), S(238) };
         InvalidateRect(hwnd_, &rc, FALSE);
     }
 }
@@ -787,14 +963,16 @@ void SettingsWindow::EndHotkeyCapture(bool cancelMsg) {
     }
 }
 
-void SettingsWindow::DrawCard(HDC hdc, RECT rc) const {
-    HPEN pen = CreatePen(PS_SOLID, 1, kColCardBorder);
-    HGDIOBJ oldPen = SelectObject(hdc, pen);
-    HGDIOBJ oldBrush = SelectObject(hdc, brushCard_);
-    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, S(10), S(10));
-    SelectObject(hdc, oldBrush);
+void SettingsWindow::DrawRowContainer(HDC hdc, RECT rc, const std::vector<int>& dividerY) const {
+    DrawFillRoundRect(hdc, rc, S(10), kColCard, kColCardBorder);
+    HPEN divPen = CreatePen(PS_SOLID, 1, kColDivider);
+    HGDIOBJ oldPen = SelectObject(hdc, divPen);
+    for (int y : dividerY) {
+        MoveToEx(hdc, rc.left + S(16), y, nullptr);
+        LineTo(hdc, rc.right - S(16), y);
+    }
     SelectObject(hdc, oldPen);
-    DeleteObject(pen);
+    DeleteObject(divPen);
 }
 
 void SettingsWindow::DrawButtonItem(const DRAWITEMSTRUCT* dis) const {
@@ -802,7 +980,8 @@ void SettingsWindow::DrawButtonItem(const DRAWITEMSTRUCT* dis) const {
     RECT rc = dis->rcItem;
     bool isPrimary = (dis->CtlID == kIdBtnApply);
     bool isQuit = (dis->CtlID == kIdBtnQuit);
-    bool isHotkey = (dis->CtlID == kIdBtnHotkey);
+    bool isHeaderOrFooter = (dis->CtlID == kIdBtnSaveReplay || dis->CtlID == kIdBtnHideTray ||
+                             dis->CtlID == kIdBtnQuit || dis->CtlID == kIdBtnApply);
     bool isPressed = (dis->itemState & ODS_SELECTED) != 0;
     bool isHovered = (dis->hwndItem == hoveredBtn_);
     bool isFocus = (dis->itemState & ODS_FOCUS) != 0;
@@ -814,12 +993,8 @@ void SettingsWindow::DrawButtonItem(const DRAWITEMSTRUCT* dis) const {
     if (isPrimary) {
         bg = isPressed ? kColAccentPressed : (isHovered ? kColAccentHover : kColAccent);
         border = bg;
-    } else if (isHotkey && recordingHotkey_) {
-        bg = RGB(36, 48, 72);
-        border = kColAccent;
-        fg = kColText;
     } else if (isQuit && isHovered) {
-        bg = RGB(74, 34, 38);
+        bg = RGB(68, 30, 34);
         border = kColRed;
         fg = RGB(254, 202, 202);
     } else {
@@ -827,86 +1002,135 @@ void SettingsWindow::DrawButtonItem(const DRAWITEMSTRUCT* dis) const {
         if (isFocus) border = kColAccent;
     }
 
-    FillRect(hdc, &rc, (dis->CtlID == kIdBtnSaveReplay || dis->CtlID == kIdBtnHideTray ||
-                       dis->CtlID == kIdBtnQuit || dis->CtlID == kIdBtnApply) ? brushBg_ : brushCard_);
+    FillRect(hdc, &rc, isHeaderOrFooter ? brushBg_ : brushCard_);
+    DrawFillRoundRect(hdc, rc, S(7), bg, border);
 
-    HPEN pen = CreatePen(PS_SOLID, 1, border);
-    HBRUSH br = CreateSolidBrush(bg);
-    HGDIOBJ oldPen = SelectObject(hdc, pen);
-    HGDIOBJ oldBr = SelectObject(hdc, br);
-    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, S(8), S(8));
-    SelectObject(hdc, oldBr);
-    SelectObject(hdc, oldPen);
-    DeleteObject(br);
-    DeleteObject(pen);
-
-    std::wstring text;
-    if (isHotkey) {
-        if (recordingHotkey_) {
-            text = L"Press key combination... (Esc cancels)";
-        } else {
-            text = Utf8ToWide(pendingHotkey_.display) + L"  (Click to change)";
-        }
-    } else {
-        wchar_t buf[128] = {};
-        GetWindowTextW(dis->hwndItem, buf, 128);
-        text = buf;
-    }
-
+    wchar_t buf[128] = {};
+    GetWindowTextW(dis->hwndItem, buf, 128);
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, fg);
     HGDIOBJ oldFont = SelectObject(hdc, isPrimary ? fontBold_ : fontRegular_);
-    DrawTextW(hdc, text.c_str(), -1, const_cast<RECT*>(&rc), DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawTextW(hdc, buf, -1, const_cast<RECT*>(&rc),
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(hdc, oldFont);
 }
 
-void SettingsWindow::DrawToggleItem(const DRAWITEMSTRUCT* dis, bool checked, const wchar_t* label) const {
+void SettingsWindow::DrawSegFpsItem(const DRAWITEMSTRUCT* dis) const {
     HDC hdc = dis->hDC;
     RECT rc = dis->rcItem;
     FillRect(hdc, &rc, brushCard_);
 
-    int trackW = S(34);
-    int trackH = S(18);
-    int trackX = rc.left;
+    COLORREF outerBorder = ((dis->itemState & ODS_FOCUS) != 0) ? kColAccent : kColInputBorder;
+    DrawFillRoundRect(hdc, rc, S(8), kColSegTrack, outerBorder);
+
+    int pad = S(3);
+    int midX = (rc.left + rc.right) / 2;
+    RECT leftRc{ rc.left + pad, rc.top + pad, midX - S(1), rc.bottom - pad };
+    RECT rightRc{ midX + S(1), rc.top + pad, rc.right - pad, rc.bottom - pad };
+
+    struct SegInfo { RECT rc; const wchar_t* label; bool active; bool hover; };
+    const SegInfo segs[2] = {
+        { leftRc, L"30 fps", selectedFps_ == 30u, hoveredBtn_ == btnSegFps_ && hoveredSeg_ == 0 },
+        { rightRc, L"60 fps", selectedFps_ == 60u, hoveredBtn_ == btnSegFps_ && hoveredSeg_ == 1 },
+    };
+
+    SetBkMode(hdc, TRANSPARENT);
+    for (const auto& s : segs) {
+        if (s.active) {
+            DrawFillRoundRect(hdc, s.rc, S(6), kColSegActive, kColSegActiveBorder);
+        } else if (s.hover) {
+            DrawFillRoundRect(hdc, s.rc, S(6), kColHover, kColHover);
+        }
+        HGDIOBJ oldFont = SelectObject(hdc, s.active ? fontBold_ : fontRegular_);
+        SetTextColor(hdc, s.active ? kColText : kColMuted);
+        DrawTextW(hdc, s.label, -1, const_cast<RECT*>(&s.rc),
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(hdc, oldFont);
+    }
+}
+
+void SettingsWindow::DrawHotkeyItem(const DRAWITEMSTRUCT* dis) const {
+    HDC hdc = dis->hDC;
+    RECT rc = dis->rcItem;
+    FillRect(hdc, &rc, brushCard_);
+
+    bool hovered = (dis->hwndItem == hoveredBtn_);
+    bool focus = (dis->itemState & ODS_FOCUS) != 0;
+
+    if (recordingHotkey_) {
+        DrawFillRoundRect(hdc, rc, S(7), RGB(28, 34, 52), kColAccent);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, kColText);
+        HGDIOBJ oldFont = SelectObject(hdc, fontDesc_);
+        RECT promptRc{ rc.left + S(10), rc.top, rc.right - S(48), rc.bottom };
+        DrawTextW(hdc, L"Press keybind...", -1, &promptRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        RECT escRc{ rc.right - S(42), rc.top + S(4), rc.right - S(6), rc.bottom - S(4) };
+        DrawFillRoundRect(hdc, escRc, S(5), kColKeycap, kColKeycapBorder);
+        SelectObject(hdc, fontKeycap_);
+        SetTextColor(hdc, kColMuted);
+        DrawTextW(hdc, L"Esc", -1, &escRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(hdc, oldFont);
+        return;
+    }
+
+    if (hovered || focus) {
+        DrawFillRoundRect(hdc, rc, S(7), RGB(26, 28, 34), focus ? kColAccent : kColInputBorder);
+    }
+
+    auto tokens = SplitKeycaps(pendingHotkey_.display);
+    if (tokens.empty()) return;
+
+    HGDIOBJ oldFont = SelectObject(hdc, fontKeycap_);
+    SetBkMode(hdc, TRANSPARENT);
+
+    int cursorX = rc.right - S(2);
+    int capH = S(22);
+    int capY = rc.top + ((rc.bottom - rc.top) - capH) / 2;
+
+    for (size_t idx = tokens.size(); idx > 0; --idx) {
+        const std::wstring& tok = tokens[idx - 1];
+        RECT calc{ 0, 0, 0, 0 };
+        DrawTextW(hdc, tok.c_str(), -1, &calc, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        int capW = std::max(S(24), static_cast<int>(calc.right - calc.left) + S(14));
+        int leftX = cursorX - capW;
+        if (leftX < rc.left + S(2)) break;
+
+        RECT chipRc{ leftX, capY, cursorX, capY + capH };
+        DrawFillRoundRect(hdc, chipRc, S(5), kColKeycap, hovered ? kColSegActiveBorder : kColKeycapBorder);
+        SetTextColor(hdc, kColText);
+        DrawTextW(hdc, tok.c_str(), -1, &chipRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        cursorX = leftX - S(5);
+    }
+    SelectObject(hdc, oldFont);
+}
+
+void SettingsWindow::DrawToggleItem(const DRAWITEMSTRUCT* dis, bool checked) const {
+    HDC hdc = dis->hDC;
+    RECT rc = dis->rcItem;
+    FillRect(hdc, &rc, brushCard_);
+
+    int trackW = S(36);
+    int trackH = S(20);
+    int trackX = rc.right - trackW;
     int trackY = rc.top + ((rc.bottom - rc.top) - trackH) / 2;
 
     COLORREF trackCol = checked ? kColAccent : kColTrackOff;
-    HBRUSH trackBr = CreateSolidBrush(trackCol);
-    HPEN trackPen = CreatePen(PS_SOLID, 1, trackCol);
-    HGDIOBJ oldPen = SelectObject(hdc, trackPen);
-    HGDIOBJ oldBr = SelectObject(hdc, trackBr);
-    RoundRect(hdc, trackX, trackY, trackX + trackW, trackY + trackH, trackH, trackH);
-    SelectObject(hdc, oldBr);
-    SelectObject(hdc, oldPen);
-    DeleteObject(trackBr);
-    DeleteObject(trackPen);
+    RECT trackRc{ trackX, trackY, trackX + trackW, trackY + trackH };
+    DrawFillRoundRect(hdc, trackRc, trackH, trackCol, trackCol);
 
     int pad = S(3);
     int thumbSz = trackH - 2 * pad;
     int thumbX = checked ? (trackX + trackW - pad - thumbSz) : (trackX + pad);
     int thumbY = trackY + pad;
-
-    HBRUSH thumbBr = CreateSolidBrush(kColText);
-    oldPen = SelectObject(hdc, GetStockObject(NULL_PEN));
-    oldBr = SelectObject(hdc, thumbBr);
-    Ellipse(hdc, thumbX, thumbY, thumbX + thumbSz, thumbY + thumbSz);
-    SelectObject(hdc, oldBr);
-    SelectObject(hdc, oldPen);
-    DeleteObject(thumbBr);
-
-    RECT textRc{ trackX + trackW + S(8), rc.top, rc.right, rc.bottom };
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, checked ? kColText : kColMuted);
-    HGDIOBJ oldFont = SelectObject(hdc, fontRegular_);
-    DrawTextW(hdc, label, -1, &textRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    SelectObject(hdc, oldFont);
+    BlitSmoothCircle(hdc, thumbX, thumbY, thumbSz, kColText, trackCol);
 }
 
 void SettingsWindow::DrawComboItem(const DRAWITEMSTRUCT* dis) const {
     HDC hdc = dis->hDC;
     RECT rc = dis->rcItem;
     bool isSelected = (dis->itemState & ODS_SELECTED) != 0;
-    COLORREF bg = isSelected ? RGB(54, 72, 108) : kColInput;
+    COLORREF bg = isSelected ? kColHover : kColInput;
 
     HBRUSH bgBr = CreateSolidBrush(bg);
     FillRect(hdc, &rc, bgBr);
@@ -921,12 +1145,13 @@ void SettingsWindow::DrawComboItem(const DRAWITEMSTRUCT* dis) const {
     text.resize(static_cast<size_t>(len));
 
     RECT textRc = rc;
-    textRc.left += S(6);
+    textRc.left += S(8);
     textRc.right -= S(4);
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, kColText);
     HGDIOBJ oldFont = SelectObject(hdc, fontRegular_);
-    DrawTextW(hdc, text.c_str(), -1, &textRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawTextW(hdc, text.c_str(), -1, &textRc,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(hdc, oldFont);
 }
 
@@ -939,7 +1164,9 @@ void SettingsWindow::DestroyGdiResources() {
     };
     del(reinterpret_cast<HGDIOBJ&>(fontRegular_));
     del(reinterpret_cast<HGDIOBJ&>(fontBold_));
-    del(reinterpret_cast<HGDIOBJ&>(fontSmall_));
+    del(reinterpret_cast<HGDIOBJ&>(fontSection_));
+    del(reinterpret_cast<HGDIOBJ&>(fontDesc_));
+    del(reinterpret_cast<HGDIOBJ&>(fontKeycap_));
     del(reinterpret_cast<HGDIOBJ&>(brushBg_));
     del(reinterpret_cast<HGDIOBJ&>(brushCard_));
     del(reinterpret_cast<HGDIOBJ&>(brushInput_));

@@ -24,7 +24,7 @@ cmake --build build
 
 This produces three binaries inside `build/`.
 
-* `build\clipper.exe` (`265,728` bytes `measured`)
+* `build\clipper.exe` (`273,920` bytes `measured`)
 * `build\clipper_bench.exe` (`203,264` bytes `measured`)
 * `build\clipper_tests.exe` (`242,688` bytes `measured`)
 
@@ -36,11 +36,11 @@ Launching `clipper.exe` again while already running focuses and re-opens the Set
 
 ### Settings GUI Controls
 
-* **Screen:** Lists attached DXGI monitors with friendly name, resolution, refresh rate, and `[Primary]` tag matching capture enumeration order (`Refresh` updates the list).
-* **Frame Rate, Replay, Bitrate:** Sets target FPS (`30`, `60`), rolling seconds (`15..300`), bitrate (`5..80 Mbps`), and live estimated ring buffer RAM readout.
-* **Audio and Chime Toggles:** Independently toggles Desktop Audio loopback, Microphone capture, and save chime.
-* **Save Hotkey:** Click the hotkey button and press any combination (`Ctrl+Alt+S` default, single `F1..F24`/Numpad/Nav keys, or modifiers + alphanumeric/OEM keys; `Esc` cancels, **Reset** restores `Ctrl+Alt+S`).
-* **Clips Folder:** Edit box paired with **Browse...** (`IFileOpenDialog` folder picker) and **Open** (opens Explorer).
+* **Display:** Lists attached DXGI monitors with friendly name, resolution, refresh rate, and `[Primary]` tag matching capture enumeration order (refresh button reloads the list).
+* **Frame rate, Replay window, Video bitrate:** Uses a `30 fps` or `60 fps` segmented toggle, rolling retention picker (`15..300` s) with live estimated ring buffer RAM readout, and VBR bitrate picker (`5..80` Mbps).
+* **Audio and alerts:** Right-aligned switches inside grouped hairline rows independently toggle Desktop audio loopback, Microphone capture, and Save chime.
+* **Save replay hotkey:** Click the keycap strip (`Ctrl` `Alt` `S` default) and press any combination (`F1..F24`, Numpad, Nav keys, or modifiers plus alphanumeric/OEM keys; `Esc` cancels, **Reset** restores `Ctrl+Alt+S`).
+* **Clips folder:** Edit box paired with **Browse** (`IFileOpenDialog` folder picker) and **Open** (opens Explorer).
 * **Actions:** **Apply** saves `clipper.ini` (updating folder/chime/hotkey in-place without clearing your replay buffer, or cleanly restarting capture when display/quality/audio settings change), **Save Replay** writes the current clip, **Hide to Tray** destroys the window while keeping capture active, and **Quit** stops recording and exits.
 
 ### Tray Icon Actions

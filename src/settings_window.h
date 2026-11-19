@@ -47,7 +47,7 @@ private:
         kIdBtnSaveReplay = 2001,
         kIdComboMonitor = 2002,
         kIdBtnRefreshMonitors = 2003,
-        kIdComboFps = 2004,
+        kIdSegFps = 2004,
         kIdComboSeconds = 2005,
         kIdComboBitrate = 2006,
         kIdToggleDesktopAudio = 2007,
@@ -68,6 +68,10 @@ private:
                                                UINT_PTR subId, DWORD_PTR refData);
     static LRESULT CALLBACK ButtonHoverProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                             UINT_PTR subId, DWORD_PTR refData);
+    static LRESULT CALLBACK ComboBorderProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                            UINT_PTR subId, DWORD_PTR refData);
+    static LRESULT CALLBACK SegFpsKeyProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                          UINT_PTR subId, DWORD_PTR refData);
 
     LRESULT WndProc(UINT msg, WPARAM wParam, LPARAM lParam);
     int S(int logicalPx) const;
@@ -86,9 +90,11 @@ private:
     void BeginHotkeyCapture();
     void EndHotkeyCapture(bool cancelMsg);
 
-    void DrawCard(HDC hdc, RECT rc) const;
+    void DrawRowContainer(HDC hdc, RECT rc, const std::vector<int>& dividerY) const;
     void DrawButtonItem(const DRAWITEMSTRUCT* dis) const;
-    void DrawToggleItem(const DRAWITEMSTRUCT* dis, bool checked, const wchar_t* label) const;
+    void DrawSegFpsItem(const DRAWITEMSTRUCT* dis) const;
+    void DrawHotkeyItem(const DRAWITEMSTRUCT* dis) const;
+    void DrawToggleItem(const DRAWITEMSTRUCT* dis, bool checked) const;
     void DrawComboItem(const DRAWITEMSTRUCT* dis) const;
     void DestroyGdiResources();
 
@@ -98,14 +104,16 @@ private:
 
     HFONT fontRegular_ = nullptr;
     HFONT fontBold_ = nullptr;
-    HFONT fontSmall_ = nullptr;
+    HFONT fontSection_ = nullptr;
+    HFONT fontDesc_ = nullptr;
+    HFONT fontKeycap_ = nullptr;
     HBRUSH brushBg_ = nullptr;
     HBRUSH brushCard_ = nullptr;
     HBRUSH brushInput_ = nullptr;
 
     HWND comboMonitor_ = nullptr;
     HWND btnRefresh_ = nullptr;
-    HWND comboFps_ = nullptr;
+    HWND btnSegFps_ = nullptr;
     HWND comboSeconds_ = nullptr;
     HWND comboBitrate_ = nullptr;
     HWND btnDesktopAudio_ = nullptr;
@@ -123,18 +131,20 @@ private:
 
     std::vector<MonitorInfo> monitors_;
     HotkeySpec pendingHotkey_{};
+    uint32_t selectedFps_ = 60;
     bool desktopAudio_ = true;
     bool micAudio_ = true;
     bool saveChime_ = true;
     bool recordingHotkey_ = false;
     HWND hoveredBtn_ = nullptr;
+    int hoveredSeg_ = -1;
 
     std::wstring statusText_ = L"Starting...";
     COLORREF statusColor_ = RGB(245, 158, 11);
     std::wstring ramText_;
-    COLORREF ramColor_ = RGB(154, 163, 178);
+    COLORREF ramColor_ = RGB(138, 143, 152);
     std::wstring feedbackText_;
-    COLORREF feedbackColor_ = RGB(154, 163, 178);
+    COLORREF feedbackColor_ = RGB(138, 143, 152);
 };
 
 }
