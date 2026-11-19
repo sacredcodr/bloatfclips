@@ -21,6 +21,18 @@
 
 namespace clipper {
 
+struct MonitorInfo {
+    uint32_t index = 0;
+    std::wstring deviceName;
+    std::wstring friendlyName;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t refreshHz = 0;
+    bool isPrimary = false;
+};
+
+std::vector<MonitorInfo> EnumerateCaptureMonitors();
+
 struct VideoStats {
     uint64_t framesCaptured = 0;
     uint64_t framesEncoded = 0;

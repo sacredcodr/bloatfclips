@@ -55,6 +55,8 @@ public:
 
     void SetMicEnabled(bool enabled);
     bool IsMicEnabled() const;
+    void UpdateSaveSettings(const std::wstring& outputDir, bool saveChime);
+    const AppConfig& Config() const { return cfg_; }
 
     void SetSaveCallback(SaveCallback cb);
     VideoStats GetVideoStats() const { return video_.Stats(); }

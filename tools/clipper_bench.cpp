@@ -534,7 +534,7 @@ int RunGpuLoadBench(int secondsPerRun, int runsPerSide) {
                     L"Local\\ClipperBenchReady_%lu_%d", GetCurrentProcessId(), r);
                 hReady = CreateEventW(nullptr, TRUE, FALSE, readyName);
                 std::wstring cmd = L"\"" + clipperExe.wstring() +
-                    L"\" --fail-fast --seconds=15 --fps=60 --bitrate=20 --no-chime --ready-event=" + readyName;
+                    L"\" --tray --fail-fast --seconds=15 --fps=60 --bitrate=20 --no-chime --ready-event=" + readyName;
                 STARTUPINFOW startup{};
                 startup.cb = sizeof(startup);
                 if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &pi)) {

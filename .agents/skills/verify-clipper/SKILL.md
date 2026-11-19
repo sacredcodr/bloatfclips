@@ -45,13 +45,15 @@ Run the live 3-second replay capture and `IMFSourceReader` decode-back check in 
 c:\Users\yugi\Desktop\recorder\build\clipper_bench.exe --self-test-clip 3 --out c:\Users\yugi\Desktop\recorder\build\test_out\live_replay.mp4
 ```
 
-Run the 5-round alternating 3D swapchain GPU load benchmark. Close heavy background GPU apps first if checking sub-millisecond baseline jitter.
+Run the 5-round alternating 3D swapchain GPU load benchmark (launches `clipper.exe --tray --fail-fast` headlessly). Close heavy background GPU apps first if checking sub-millisecond baseline jitter.
 
 ```powershell
 c:\Users\yugi\Desktop\recorder\build\clipper_bench.exe --gpu-load-bench 3 --runs 5
 ```
 
-If testing tray startup directly, pass `--fail-fast --ready-event=<UniqueName>` to `build\clipper.exe` and terminate only the matching child process PID via `WM_CLOSE`.
+If testing tray startup directly, pass `--tray --fail-fast --ready-event=<UniqueName>` to `build\clipper.exe` and terminate only the matching child process PID via `WM_CLOSE`.
+
+When verifying Settings GUI changes, launch `build\clipper.exe` without `--tray` and verify `ClipperSettingsWindow` opens (`IsWindowVisible`), destroys itself cleanly on `WM_CLOSE` while leaving `ClipperTrayHiddenWindow` running, re-opens on a second `clipper.exe` invocation, and exits cleanly when `WM_CLOSE` is sent to `ClipperTrayHiddenWindow`.
 
 ## Evidence
 

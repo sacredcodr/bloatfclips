@@ -165,9 +165,39 @@ void TestConfig() {
     HotkeySpec hk;
     CHECK(ParseHotkeyString("ctrl+shift+f9", hk) && hk.display == "Ctrl+Shift+F9" && hk.vk == VK_F9);
     CHECK(ParseHotkeyString("F8", hk) && hk.modifiers == 0 && hk.vk == VK_F8);
+    CHECK(ParseHotkeyString("Numpad0", hk) && hk.vk == VK_NUMPAD0 && hk.display == "Numpad0");
+    CHECK(ParseHotkeyString("Ctrl+NumMul", hk) && hk.vk == VK_MULTIPLY && hk.modifiers == MOD_CONTROL);
+    CHECK(ParseHotkeyString("Alt+Backtick", hk) && hk.vk == VK_OEM_3 && hk.modifiers == MOD_ALT);
     CHECK(!ParseHotkeyString("", hk));
     CHECK(!ParseHotkeyString("Ctrl+Alt", hk));
     CHECK(!ParseHotkeyString("Ctrl+NotAKey", hk));
+
+    CHECK(!IsSafeHotkey(0, 'S'));
+    CHECK(!IsSafeHotkey(0, '5'));
+    CHECK(!IsSafeHotkey(0, VK_SPACE));
+    CHECK(!IsSafeHotkey(0, VK_ESCAPE));
+    CHECK(!IsSafeHotkey(MOD_CONTROL, VK_CONTROL));
+    CHECK(IsSafeHotkey(MOD_CONTROL | MOD_ALT, 'S'));
+    CHECK(IsSafeHotkey(0, VK_F9));
+    CHECK(IsSafeHotkey(0, VK_INSERT));
+    CHECK(IsSafeHotkey(0, VK_ADD));
+
+    HotkeySpec formatted;
+    CHECK(!FormatHotkeyFromVk(0, 'S', formatted));
+    CHECK(FormatHotkeyFromVk(MOD_CONTROL | MOD_SHIFT, VK_F10, formatted) &&
+          formatted.display == "Ctrl+Shift+F10");
+    CHECK(FormatHotkeyFromVk(0, VK_NUMPAD3, formatted) && formatted.display == "Numpad3");
+    CHECK(FormatHotkeyFromVk(MOD_ALT, VK_OEM_3, formatted) && formatted.display == "Alt+Backtick");
+
+    AppConfig valCfg = MakeDefaultConfig();
+    valCfg.fps = 240;
+    valCfg.bitrateMbps = 80;
+    valCfg.replaySeconds = 300;
+    std::vector<std::string> valWarns;
+    ValidateAppConfig(valCfg, valWarns);
+    CHECK(valCfg.fps == 60);
+    CHECK(valCfg.replaySeconds == 150);
+    CHECK(valWarns.size() >= 2);
 
     wchar_t arg0[] = L"clipper.exe";
     wchar_t arg1[] = L"--fps=30";
@@ -461,8 +491,19 @@ void TestRecorderComponentsAndLifecycle() {
     CHECK(eng.State() == EngineState::Stopped);
     SaveResult stoppedSave = eng.SaveClipSync(L"build\\test_out\\should_not_exist.mp4");
     CHECK(!stoppedSave.ok && !stoppedSave.error.empty());
+    eng.UpdateSaveSettings(L"C:\\Temp\\ClipperOut", false);
+    CHECK(eng.Config().outputDir == L"C:\\Temp\\ClipperOut");
+    CHECK(!eng.Config().saveChime);
     eng.Stop();
     CHECK(eng.State() == EngineState::Stopped);
+
+    auto monitors = EnumerateCaptureMonitors();
+    CHECK(!monitors.empty());
+    if (!monitors.empty()) {
+        CHECK(!monitors[0].deviceName.empty());
+        CHECK(monitors[0].width > 0 && monitors[0].height > 0);
+        CHECK(monitors[0].refreshHz > 0);
+    }
 
     AppConfig badMonitor = cfg;
     badMonitor.monitorIndex = 99;

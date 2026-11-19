@@ -10,7 +10,7 @@ Clipper is a single-binary native C++20 Windows instant-replay recorder (`clippe
 - No DLL injection, `Present` hooking, or multi-scene UI.
 - No WGC single-window capture, HEVC/AV1 muxing, or dual separate MP4 audio tracks.
 - No external `ffmpeg.exe` subprocesses or continuous disk replay caches.
-- No live config hot-reload or pause-resume toggle; editing `clipper.ini` takes effect on restart.
+- No continuous GPU UI frame loop during gameplay; the native Settings window destroys its `HWND` on close/hide-to-tray so background gaming overhead remains zero.
 
 ## Data Shapes and Boundaries
 
@@ -31,7 +31,7 @@ Parsed at startup from `clipper.ini` and optional CLI flags, with validation con
 | `replay_seconds` | `60` | `5..300` | Rolling retention window |
 | `record_desktop_audio` | `true` | `true`, `false` | WASAPI loopback source |
 | `record_mic_audio` | `true` | `true`, `false` | WASAPI mic source (mixed into track 1) |
-| `hotkey_save` | `Ctrl+Alt+S` | Win32 modifier + VK | Avoids NVIDIA overlay `Alt+F10` collision |
+| `hotkey_save` | `Ctrl+Alt+S` | Win32 modifier + VK | Formatted/validated via `FormatHotkeyFromVk` and `IsSafeHotkey` (extended keys + Numpad/OEM); avoids NVIDIA overlay `Alt+F10` collision |
 | `output_dir` | `%USERPROFILE%\Videos\Clips` | Expanded directory path | Recursive creation on save |
 | `save_chime` | `true` | `true`, `false` | Non-blocking `MessageBeep(MB_OK)` |
 
@@ -65,8 +65,10 @@ Invariants:
    - Handles `AUDCLNT_BUFFERFLAGS_SILENT` and `AUDCLNT_E_DEVICE_INVALIDATED` reopen cleanly. Maintains a `25 ms` lead margin behind real-time, waits up to `65 ms` when an active stream has a partial `< 1024` frame before padding silence, trims FIFO backlogs above `80 ms` (`3840` frames) down to `30 ms` (`1440` frames), and resets + bumps generation on jumps > `2 s`.
 3. **Clip Saver Thread:**
    - Woken by manual hotkey/menu save trigger (latching `saveRequestPtsUs`). Waits on `PacketRingBuffer::WaitForPts` watermark rather than fixed sleep, snapshots video and audio rings sequentially, muxes fast-start `.mp4` to a `.tmp` sibling path via `WriteMp4File` (`FILE_FLAG_SEQUENTIAL_SCAN`), atomically renames via `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)`, and calls `MessageBeep(MB_OK)` when `save_chime` is enabled.
-4. **Main Thread (Win32 Tray Daemon):**
-   - Hidden top-level `WS_OVERLAPPED` window (`ClipperTrayHiddenWindow`, chosen over `HWND_MESSAGE` so Windows delivers `TaskbarCreated` broadcasts) owning `Shell_NotifyIconW`, `RegisterHotKey` (reporting collision via tray balloon), and popup menu (`Save Replay`, `Mic: On/Off`, `Open Clips Folder`, `Exit`). Accepts `--fail-fast` and `--ready-event=<name>` for harness orchestration.
+4. **Main Thread (Win32 Tray Daemon and On-Demand Settings GUI):**
+   - Hidden top-level `WS_OVERLAPPED` window (`ClipperTrayHiddenWindow`, chosen over `HWND_MESSAGE` so Windows delivers `TaskbarCreated` broadcasts) owning `Shell_NotifyIconW`, `RegisterHotKey` (reporting collision via tray balloon/feedback), popup menu (`Open Settings`, `Save Replay`, `Mic: On/Off`, `Open Clips Folder`, `Exit`), and single-instance wakeup (`ClipperShowSettingsWindow` re-opens the existing process Settings UI on second launch without `--tray`/`--fail-fast`).
+   - On-demand dark-mode native Win32 Settings window (`ClipperSettingsWindow` in `src/settings_window.{h,cpp}`, scaled via `GetDpiForMonitor`) opens on launch unless `--tray`/`--minimized`/`--fail-fast` is passed. Provides DXGI/DisplayConfig monitor selection matching `EnumerateCaptureMonitors()`, FPS/replay/bitrate pickers with live RAM estimate (`kMaxBitrateSecondsBudget`), audio/chime toggles, interactive hotkey recorder (`FormatHotkeyFromVk` / `IsSafeHotkey`, suspending the global hotkey while capturing), and `IFileOpenDialog` output directory picker.
+   - `ApplyNewConfig` calls `UpdateSaveSettings` in-place (preserving rolling RAM rings) when only hotkey/folder/chime changed, or cleanly restarts `RecorderEngine` when monitor/capture/ring/audio-source parameters changed, persisting `clipper.ini` only after verified restart. Closing or clicking **Hide to Tray** calls `DestroyWindow` to release all GUI GDI/timer handles while keeping the tray daemon active. Accepts `--fail-fast`, `--tray`/`--minimized`, and `--ready-event=<name>`.
 5. **Shutdown Sequence:**
    - Signal shutdown flags/events under lifecycle mutex, join saver, audio, and video threads (`Stopping -> Stopped`), drain async NVENC slots in FIFO order + `NV_ENC_PIC_FLAG_EOS`, and free rings.
 
@@ -85,7 +87,7 @@ Invariants:
 
 ## Binary Layout and Verification
 
-- `clipper_core`: static library containing `config`, `ring_buffer`, `mp4_muxer`, and pipeline modules.
-- `clipper.exe`: minimal background tray daemon (no `IMFSourceReader` or test code).
-- `clipper_tests.exe`: unit tests (`Config`, `PacketRingBuffer` wrap/generation/stress/audio-range, ISOBMFF structural checks incl. `elst`, negative `HEAACWAVEINFO`, `> 4 GiB` `co64` math, component lifecycle) + real NVENC H.264 + MF AAC encode -> `WriteMp4File` -> `IMFSourceReader` decode-back verification.
-- `clipper_bench.exe`: `--self-test-clip <sec> --out <file.mp4>` and alternating `--gpu-load-bench <sec> --runs <N>` D3D11 + DXGI flip-model swapchain benchmark with deterministic child-process readiness/shutdown signaling.
+- `clipper_core`: static library containing `config`, `ring_buffer`, `mp4_muxer`, and pipeline modules (`EnumerateCaptureMonitors()` shared by `VideoPipeline` and `SettingsWindow`).
+- `clipper.exe`: Win32 tray daemon with on-demand dark-mode `SettingsWindow` (zero `IMFSourceReader` or test code).
+- `clipper_tests.exe`: unit tests (`Config` incl. `FormatHotkeyFromVk`/`IsSafeHotkey`/`ValidateAppConfig`, `PacketRingBuffer` wrap/generation/stress/audio-range, ISOBMFF structural checks incl. `elst`, negative `HEAACWAVEINFO`, `> 4 GiB` `co64` math, component lifecycle + `EnumerateCaptureMonitors()` + `UpdateSaveSettings`) + real NVENC H.264 + MF AAC encode -> `WriteMp4File` -> `IMFSourceReader` decode-back verification.
+- `clipper_bench.exe`: `--self-test-clip <sec> --out <file.mp4>` and alternating `--gpu-load-bench <sec> --runs <N>` D3D11 + DXGI flip-model swapchain benchmark spawning `clipper.exe --tray --fail-fast --ready-event=...`.

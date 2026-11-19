@@ -18,6 +18,129 @@ std::string HexHr(HRESULT hr) {
     return buf;
 }
 
+struct DxgiOutputCandidate {
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+    Microsoft::WRL::ComPtr<IDXGIOutput> output;
+    DXGI_OUTPUT_DESC desc{};
+    UINT vendorId = 0;
+};
+
+bool EnumeratePreferredDxgiOutputs(std::vector<DxgiOutputCandidate>& outList, HRESULT* outHr = nullptr) {
+    outList.clear();
+    Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
+    HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+    if (outHr) *outHr = hr;
+    if (FAILED(hr)) return false;
+
+    std::vector<DxgiOutputCandidate> nvOutputs;
+    std::vector<DxgiOutputCandidate> allOutputs;
+
+    for (UINT ai = 0;; ++ai) {
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+        if (factory->EnumAdapters1(ai, &adapter) == DXGI_ERROR_NOT_FOUND) break;
+        DXGI_ADAPTER_DESC1 ad{};
+        adapter->GetDesc1(&ad);
+        if (ad.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
+        for (UINT oi = 0;; ++oi) {
+            Microsoft::WRL::ComPtr<IDXGIOutput> out;
+            if (adapter->EnumOutputs(oi, &out) == DXGI_ERROR_NOT_FOUND) break;
+            DXGI_OUTPUT_DESC od{};
+            out->GetDesc(&od);
+            if (!od.AttachedToDesktop) continue;
+            DxgiOutputCandidate c{ adapter, out, od, ad.VendorId };
+            if (ad.VendorId == 0x10DE) nvOutputs.push_back(c);
+            allOutputs.push_back(std::move(c));
+        }
+    }
+
+    outList = !nvOutputs.empty() ? std::move(nvOutputs) : std::move(allOutputs);
+    return true;
+}
+
+std::wstring LookupFriendlyMonitorName(const wchar_t* gdiDeviceName,
+                                       const std::vector<DISPLAYCONFIG_PATH_INFO>& paths) {
+    if (!gdiDeviceName || !gdiDeviceName[0]) return {};
+    for (const auto& path : paths) {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME srcName{};
+        srcName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        srcName.header.size = sizeof(srcName);
+        srcName.header.adapterId = path.sourceInfo.adapterId;
+        srcName.header.id = path.sourceInfo.id;
+        if (DisplayConfigGetDeviceInfo(&srcName.header) != ERROR_SUCCESS) continue;
+        if (wcscmp(srcName.viewGdiDeviceName, gdiDeviceName) != 0) continue;
+
+        DISPLAYCONFIG_TARGET_DEVICE_NAME tgtName{};
+        tgtName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+        tgtName.header.size = sizeof(tgtName);
+        tgtName.header.adapterId = path.targetInfo.adapterId;
+        tgtName.header.id = path.targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&tgtName.header) == ERROR_SUCCESS &&
+            tgtName.monitorFriendlyDeviceName[0] != L'\0') {
+            return tgtName.monitorFriendlyDeviceName;
+        }
+    }
+
+    DISPLAY_DEVICEW dd{};
+    dd.cb = sizeof(dd);
+    if (EnumDisplayDevicesW(gdiDeviceName, 0, &dd, 0) && dd.DeviceString[0] != L'\0') {
+        return dd.DeviceString;
+    }
+    return {};
+}
+
+}
+
+std::vector<MonitorInfo> EnumerateCaptureMonitors() {
+    std::vector<MonitorInfo> result;
+    std::vector<DxgiOutputCandidate> candidates;
+    if (!EnumeratePreferredDxgiOutputs(candidates) || candidates.empty()) return result;
+
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    UINT32 numPaths = 0, numModes = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &numPaths, &numModes) == ERROR_SUCCESS &&
+        numPaths > 0) {
+        paths.resize(numPaths);
+        modes.resize(numModes);
+        if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &numPaths, paths.data(), &numModes, modes.data(), nullptr) == ERROR_SUCCESS) {
+            paths.resize(numPaths);
+        } else {
+            paths.clear();
+        }
+    }
+
+    result.reserve(candidates.size());
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        const auto& c = candidates[i];
+        MonitorInfo info;
+        info.index = static_cast<uint32_t>(i);
+        info.deviceName = c.desc.DeviceName;
+        info.friendlyName = LookupFriendlyMonitorName(c.desc.DeviceName, paths);
+        if (info.friendlyName.empty()) info.friendlyName = info.deviceName;
+
+        DEVMODEW dm{};
+        dm.dmSize = sizeof(dm);
+        if (EnumDisplaySettingsExW(c.desc.DeviceName, ENUM_CURRENT_SETTINGS, &dm, 0)) {
+            info.width = dm.dmPelsWidth;
+            info.height = dm.dmPelsHeight;
+            info.refreshHz = dm.dmDisplayFrequency;
+        } else {
+            LONG w = c.desc.DesktopCoordinates.right - c.desc.DesktopCoordinates.left;
+            LONG h = c.desc.DesktopCoordinates.bottom - c.desc.DesktopCoordinates.top;
+            info.width = w > 0 ? static_cast<uint32_t>(w) : 0u;
+            info.height = h > 0 ? static_cast<uint32_t>(h) : 0u;
+        }
+
+        if (c.desc.Monitor) {
+            MONITORINFOEXW mi{};
+            mi.cbSize = sizeof(mi);
+            if (GetMonitorInfoW(c.desc.Monitor, &mi)) {
+                info.isPrimary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
+            }
+        }
+        result.push_back(std::move(info));
+    }
+    return result;
 }
 
 VideoPipeline::~VideoPipeline() {
@@ -330,6 +453,10 @@ bool VideoPipeline::InitNvenc(UINT width, UINT height, std::string& errOut) {
         slots_[i].bitstream = cbb.bitstreamBuffer;
 
         slots_[i].eventHandle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!slots_[i].eventHandle) {
+            errOut = "CreateEventW failed for NVENC async event";
+            return false;
+        }
         NV_ENC_EVENT_PARAMS ep{};
         ep.version = NV_ENC_EVENT_PARAMS_VER;
         ep.completionEvent = slots_[i].eventHandle;
@@ -340,7 +467,7 @@ bool VideoPipeline::InitNvenc(UINT width, UINT height, std::string& errOut) {
     }
 
     encFrameIdx_ = 0;
-    encoderInitialized_ = true;
+    encoderInitialized_ = false;
     eosSent_ = false;
     width_ = width;
     height_ = height;
@@ -353,40 +480,12 @@ bool VideoPipeline::InitNvenc(UINT width, UINT height, std::string& errOut) {
 bool VideoPipeline::InitAllResources(std::string& errOut) {
     RebindInputDesktop();
 
-    Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
-    HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
-    if (FAILED(hr)) {
-        errOut = "CreateDXGIFactory1 failed: " + HexHr(hr);
+    std::vector<DxgiOutputCandidate> list;
+    HRESULT enumHr = S_OK;
+    if (!EnumeratePreferredDxgiOutputs(list, &enumHr)) {
+        errOut = "CreateDXGIFactory1 failed: " + HexHr(enumHr);
         return false;
     }
-
-    struct Candidate {
-        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-        Microsoft::WRL::ComPtr<IDXGIOutput> output;
-        UINT vendorId = 0;
-    };
-    std::vector<Candidate> nvOutputs;
-    std::vector<Candidate> allOutputs;
-
-    for (UINT ai = 0;; ++ai) {
-        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-        if (factory->EnumAdapters1(ai, &adapter) == DXGI_ERROR_NOT_FOUND) break;
-        DXGI_ADAPTER_DESC1 ad{};
-        adapter->GetDesc1(&ad);
-        if (ad.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
-        for (UINT oi = 0;; ++oi) {
-            Microsoft::WRL::ComPtr<IDXGIOutput> out;
-            if (adapter->EnumOutputs(oi, &out) == DXGI_ERROR_NOT_FOUND) break;
-            DXGI_OUTPUT_DESC od{};
-            out->GetDesc(&od);
-            if (!od.AttachedToDesktop) continue;
-            Candidate c{ adapter, out, ad.VendorId };
-            if (ad.VendorId == 0x10DE) nvOutputs.push_back(c);
-            allOutputs.push_back(std::move(c));
-        }
-    }
-
-    const auto& list = !nvOutputs.empty() ? nvOutputs : allOutputs;
     if (list.empty()) {
         errOut = "no attached desktop displays found";
         return false;
@@ -396,12 +495,12 @@ bool VideoPipeline::InitAllResources(std::string& errOut) {
         return false;
     }
 
-    const Candidate& chosen = list[cfg_.monitorIndex];
+    const DxgiOutputCandidate& chosen = list[cfg_.monitorIndex];
     targetOutput_ = chosen.output;
 
     D3D_FEATURE_LEVEL fl = D3D_FEATURE_LEVEL_11_1;
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
-    hr = D3D11CreateDevice(chosen.adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, &fl, 1,
+    HRESULT hr = D3D11CreateDevice(chosen.adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, &fl, 1,
         D3D11_SDK_VERSION, &dev_, nullptr, &ctx_);
     if (FAILED(hr)) {
         errOut = "D3D11CreateDevice failed: " + HexHr(hr);
@@ -545,7 +644,7 @@ void VideoPipeline::DestroyNvencAndTextures() {
         slots_[i].mappedRes = nullptr;
     }
     encFrameIdx_ = 0;
-    encoderInitialized_ = true;
+    encoderInitialized_ = false;
     eosSent_ = false;
     vpInView_.Reset();
     lastFrameTex_.Reset();
@@ -645,7 +744,6 @@ void VideoPipeline::ThreadMain() {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
     initialDesktop_ = GetThreadDesktop(GetCurrentThreadId());
-    timeBeginPeriod(1);
 
     std::string err;
     if (!InitAllResources(err)) {
@@ -653,7 +751,6 @@ void VideoPipeline::ThreadMain() {
         initOk_ = false;
         DestroyAllResources();
         SetEvent(initDoneEvent_);
-        timeEndPeriod(1);
         CoUninitialize();
         return;
     }
@@ -662,6 +759,11 @@ void VideoPipeline::ThreadMain() {
     SetEvent(initDoneEvent_);
 
     HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    bool usedTimePeriod = false;
+    if (!timer) {
+        timeBeginPeriod(1);
+        usedTimePeriod = true;
+    }
     const double framePeriodUs = 1'000'000.0 / static_cast<double>(cfg_.fps);
     const uint32_t nominalDurUs = static_cast<uint32_t>(std::llround(framePeriodUs));
 
@@ -811,7 +913,7 @@ void VideoPipeline::ThreadMain() {
     if (timer) CloseHandle(timer);
     DestroyAllResources();
     initialDesktop_ = nullptr;
-    timeEndPeriod(1);
+    if (usedTimePeriod) timeEndPeriod(1);
     CoUninitialize();
 }
 

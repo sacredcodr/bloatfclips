@@ -8,6 +8,8 @@
 
 namespace clipper {
 
+inline constexpr uint32_t kMaxBitrateSecondsBudget = 12000;
+
 struct HotkeySpec {
     uint32_t modifiers = 0x0002 | 0x0001;
     uint32_t vk = 'S';
@@ -41,6 +43,9 @@ struct ConfigParseResult {
 
 AppConfig MakeDefaultConfig();
 bool ParseHotkeyString(std::string_view text, HotkeySpec& out);
+bool IsSafeHotkey(uint32_t modifiers, uint32_t vk);
+bool FormatHotkeyFromVk(uint32_t modifiers, uint32_t vk, HotkeySpec& out);
+void ValidateAppConfig(AppConfig& cfg, std::vector<std::string>& warnings);
 std::wstring Utf8ToWide(std::string_view utf8);
 std::string WideToUtf8(std::wstring_view wide);
 std::wstring ExpandEnvPath(std::string_view utf8Path);

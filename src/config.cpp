@@ -20,7 +20,50 @@ constexpr uint32_t kMinBitrateMbps = 2;
 constexpr uint32_t kMaxBitrateMbps = 80;
 constexpr uint32_t kMinReplaySeconds = 5;
 constexpr uint32_t kMaxReplaySeconds = 300;
-constexpr uint32_t kMaxBitrateSecondsBudget = 12000;
+
+struct NamedKeyDef {
+    const char* tokenLower;
+    uint32_t vk;
+    const char* canonical;
+    bool requiresModifier;
+};
+
+constexpr NamedKeyDef kNamedKeys[] = {
+    {"insert", VK_INSERT, "Insert", false},
+    {"ins", VK_INSERT, "Insert", false},
+    {"delete", VK_DELETE, "Delete", false},
+    {"del", VK_DELETE, "Delete", false},
+    {"home", VK_HOME, "Home", false},
+    {"end", VK_END, "End", false},
+    {"pageup", VK_PRIOR, "PageUp", false},
+    {"pgup", VK_PRIOR, "PageUp", false},
+    {"pagedown", VK_NEXT, "PageDown", false},
+    {"pgdn", VK_NEXT, "PageDown", false},
+    {"printscreen", VK_SNAPSHOT, "PrintScreen", false},
+    {"prtsc", VK_SNAPSHOT, "PrintScreen", false},
+    {"pause", VK_PAUSE, "Pause", false},
+    {"space", VK_SPACE, "Space", true},
+    {"tab", VK_TAB, "Tab", true},
+    {"nummul", VK_MULTIPLY, "NumMul", false},
+    {"numadd", VK_ADD, "NumAdd", false},
+    {"numsub", VK_SUBTRACT, "NumSub", false},
+    {"numdiv", VK_DIVIDE, "NumDiv", false},
+    {"numdot", VK_DECIMAL, "NumDot", false},
+    {"backtick", VK_OEM_3, "Backtick", true},
+    {"`", VK_OEM_3, "Backtick", true},
+    {"minus", VK_OEM_MINUS, "Minus", true},
+    {"equals", VK_OEM_PLUS, "Equals", true},
+};
+
+std::string FormatDisplayCombo(uint32_t mods, std::string_view keyCanon) {
+    std::string disp;
+    if (mods & MOD_CONTROL) disp += "Ctrl+";
+    if (mods & MOD_ALT) disp += "Alt+";
+    if (mods & MOD_SHIFT) disp += "Shift+";
+    if (mods & MOD_WIN) disp += "Win+";
+    disp.append(keyCanon.data(), keyCanon.size());
+    return disp;
+}
 
 std::string Trim(std::string_view s) {
     size_t b = 0;
@@ -82,27 +125,41 @@ bool ParseKeyToken(const std::string& lower, uint32_t& vk, std::string& canonica
             return true;
         }
     }
-    struct NamedKey { const char* name; uint32_t vk; const char* canon; };
-    static constexpr NamedKey kNamed[] = {
-        {"insert", VK_INSERT, "Insert"},
-        {"ins", VK_INSERT, "Insert"},
-        {"delete", VK_DELETE, "Delete"},
-        {"del", VK_DELETE, "Delete"},
-        {"home", VK_HOME, "Home"},
-        {"end", VK_END, "End"},
-        {"pageup", VK_PRIOR, "PageUp"},
-        {"pgup", VK_PRIOR, "PageUp"},
-        {"pagedown", VK_NEXT, "PageDown"},
-        {"pgdn", VK_NEXT, "PageDown"},
-        {"printscreen", VK_SNAPSHOT, "PrintScreen"},
-        {"prtsc", VK_SNAPSHOT, "PrintScreen"},
-        {"pause", VK_PAUSE, "Pause"},
-        {"space", VK_SPACE, "Space"},
-    };
-    for (const auto& entry : kNamed) {
-        if (lower == entry.name) {
+    if (lower.size() == 7 && lower.rfind("numpad", 0) == 0 && lower[6] >= '0' && lower[6] <= '9') {
+        vk = VK_NUMPAD0 + static_cast<uint32_t>(lower[6] - '0');
+        canonical = std::string("Numpad") + lower[6];
+        return true;
+    }
+    for (const auto& entry : kNamedKeys) {
+        if (lower == entry.tokenLower) {
             vk = entry.vk;
-            canonical = entry.canon;
+            canonical = entry.canonical;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool VkToCanonicalToken(uint32_t vk, std::string& token, bool& needsModifier) {
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
+        token = std::string(1, static_cast<char>(vk));
+        needsModifier = true;
+        return true;
+    }
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        token = "F" + std::to_string((vk - VK_F1) + 1);
+        needsModifier = false;
+        return true;
+    }
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) {
+        token = "Numpad" + std::to_string(vk - VK_NUMPAD0);
+        needsModifier = false;
+        return true;
+    }
+    for (const auto& entry : kNamedKeys) {
+        if (vk == entry.vk) {
+            token = entry.canonical;
+            needsModifier = entry.requiresModifier;
             return true;
         }
     }
@@ -241,17 +298,35 @@ bool ParseHotkeyString(std::string_view text, HotkeySpec& out) {
 
     if (!hasKey) return false;
 
-    std::string disp;
-    if (mods & MOD_CONTROL) disp += "Ctrl+";
-    if (mods & MOD_ALT) disp += "Alt+";
-    if (mods & MOD_SHIFT) disp += "Shift+";
-    if (mods & MOD_WIN) disp += "Win+";
-    disp += keyCanon;
+    out.modifiers = mods;
+    out.vk = vk;
+    out.display = FormatDisplayCombo(mods, keyCanon);
+    return true;
+}
+
+bool IsSafeHotkey(uint32_t modifiers, uint32_t vk) {
+    uint32_t mods = modifiers & (MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_WIN);
+    std::string token;
+    bool needsMod = false;
+    if (!VkToCanonicalToken(vk, token, needsMod)) return false;
+    return !needsMod || mods != 0;
+}
+
+bool FormatHotkeyFromVk(uint32_t modifiers, uint32_t vk, HotkeySpec& out) {
+    uint32_t mods = modifiers & (MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_WIN);
+    std::string token;
+    bool needsMod = false;
+    if (!VkToCanonicalToken(vk, token, needsMod)) return false;
+    if (needsMod && mods == 0) return false;
 
     out.modifiers = mods;
     out.vk = vk;
-    out.display = std::move(disp);
+    out.display = FormatDisplayCombo(mods, token);
     return true;
+}
+
+void ValidateAppConfig(AppConfig& cfg, std::vector<std::string>& warnings) {
+    ClampAndValidate(cfg, warnings);
 }
 
 std::wstring Utf8ToWide(std::string_view utf8) {
@@ -379,6 +454,7 @@ ConfigParseResult ApplyCliOverrides(int argc, wchar_t** argv, AppConfig base) {
             if (eq == std::string::npos) continue;
             std::string key = ToLower(body.substr(0, eq));
             std::string val = body.substr(eq + 1);
+            if (key == "ready-event" || key == "out" || key == "runs") continue;
             if (key == "monitor") key = "monitor_index";
             else if (key == "bitrate") key = "bitrate_mbps";
             else if (key == "seconds") key = "replay_seconds";

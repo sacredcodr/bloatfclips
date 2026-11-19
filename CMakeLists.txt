@@ -57,6 +57,7 @@ target_link_libraries(clipper_core
 
 add_executable(clipper WIN32
   src/main.cpp
+  src/settings_window.cpp
 )
 
 target_link_libraries(clipper
@@ -64,6 +65,10 @@ target_link_libraries(clipper
     clipper_core
     shell32
     gdi32
+    comctl32
+    dwmapi
+    uxtheme
+    shcore
 )
 
 add_executable(clipper_tests

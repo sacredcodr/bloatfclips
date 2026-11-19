@@ -128,6 +128,12 @@ bool RecorderEngine::IsMicEnabled() const {
     return audio_.IsMicEnabled();
 }
 
+void RecorderEngine::UpdateSaveSettings(const std::wstring& outputDir, bool saveChime) {
+    std::lock_guard<std::mutex> lock(saveMutex_);
+    cfg_.outputDir = outputDir;
+    cfg_.saveChime = saveChime;
+}
+
 void RecorderEngine::SetSaveCallback(SaveCallback cb) {
     std::lock_guard<std::mutex> lock(saveMutex_);
     saveCallback_ = std::move(cb);
@@ -140,7 +146,12 @@ std::wstring RecorderEngine::MakeDefaultClipPath() const {
     std::swprintf(name, sizeof(name) / sizeof(wchar_t),
         L"clip_%04u%02u%02u_%02u%02u%02u_%03u.mp4",
         st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    return (std::filesystem::path(cfg_.outputDir) / name).wstring();
+    std::wstring dir;
+    {
+        std::lock_guard<std::mutex> lock(saveMutex_);
+        dir = cfg_.outputDir;
+    }
+    return (std::filesystem::path(dir) / name).wstring();
 }
 
 SaveResult RecorderEngine::ExecuteSave(int64_t requestPtsUs, const std::wstring& customPath) {
@@ -191,16 +202,18 @@ void RecorderEngine::SaverThreadMain() {
         while (true) {
             PendingSave req;
             SaveCallback cb;
+            bool chime = false;
             {
                 std::lock_guard<std::mutex> lock(saveMutex_);
                 if (pendingSaves_.empty()) break;
                 req = std::move(pendingSaves_.front());
                 pendingSaves_.pop_front();
                 cb = saveCallback_;
+                chime = cfg_.saveChime;
             }
 
             SaveResult res = ExecuteSave(req.requestPtsUs, req.customPath);
-            if (res.ok && cfg_.saveChime) {
+            if (res.ok && chime) {
                 MessageBeep(MB_OK);
             }
             if (cb) cb(res);
