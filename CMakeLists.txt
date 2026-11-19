@@ -1,4 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
+if(POLICY CMP0141)
+  cmake_policy(SET CMP0141 NEW)
+endif()
+set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "Embedded")
 project(clipper LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
