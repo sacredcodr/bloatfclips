@@ -93,6 +93,7 @@ private:
         ToggleDesktopAudio,
         ToggleMicAudio,
         ToggleChime,
+        ToggleStartWithWindows,
         HotkeyCaptureBtn,
         HotkeyResetBtn,
         BrowseFolder,

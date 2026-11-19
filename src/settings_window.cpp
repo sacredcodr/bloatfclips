@@ -94,6 +94,7 @@ bool ConfigsEqual(const AppConfig& a, const AppConfig& b) {
            a.recordDesktopAudio == b.recordDesktopAudio &&
            a.recordMicAudio == b.recordMicAudio &&
            a.saveChime == b.saveChime &&
+           a.startWithWindows == b.startWithWindows &&
            a.hotkeySave == b.hotkeySave &&
            a.outputDirRaw == b.outputDirRaw;
 }
@@ -1372,6 +1373,17 @@ void SettingsWindow::DrawSettingsTab(float contentX, float contentW, float& yCur
     }
     y += rowH + gap;
 
+    drawRowHeader(y, rowH, L"", L"Startup");
+    {
+        D2D1_RECT_F togR = D2D1::RectF(rightEdge - 40.0f, y + 18.0f, rightEdge, y + 38.0f);
+        HitKey tk{ HitAction::ToggleStartWithWindows, 0 };
+        DrawToggleSwitch(togR, editedCfg_.startWithWindows, hoveredHit_ == tk);
+        D2D1_RECT_F lblR = D2D1::RectF(togR.left - 260.0f, y, togR.left - 8.0f, y + rowH);
+        DrawTextLine(L"Start in background with Windows", fmtBody_.Get(), lblR, kColTextSec, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        hitTargets_.push_back({ D2D1::RectF(lblR.left, y + 8.0f, togR.right, y + rowH - 8.0f), tk, true });
+    }
+    y += rowH + gap;
+
     float row6H = 66.0f;
     DrawFluentSurface(D2D1::RectF(contentX, y, contentX + contentW, y + row6H), 6.0f, false, false);
     DrawGlyph(L"\uE765", 17.0f, D2D1::RectF(contentX + 16.0f, y, contentX + 38.0f, y + row6H), C(0xE4E4E7));
@@ -1800,6 +1812,10 @@ void SettingsWindow::ExecuteHit(const HitKey& key, float dipX) {
             break;
         case HitAction::ToggleChime:
             editedCfg_.saveChime = !editedCfg_.saveChime;
+            InvalidateWindow();
+            break;
+        case HitAction::ToggleStartWithWindows:
+            editedCfg_.startWithWindows = !editedCfg_.startWithWindows;
             InvalidateWindow();
             break;
         case HitAction::HotkeyCaptureBtn:
