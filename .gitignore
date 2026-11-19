@@ -9,3 +9,5 @@ build/
 *.ini
 .vs/
 CMakeUserPresets.json
+build-release/
+dist/

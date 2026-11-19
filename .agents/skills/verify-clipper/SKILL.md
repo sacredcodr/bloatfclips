@@ -29,7 +29,7 @@ Check prerequisite process state before running live benchmarks.
 Get-Process clipper -ErrorAction SilentlyContinue
 ```
 
-Stop any stale `clipper.exe` instance before running `clipper_bench.exe --gpu-load-bench`. If live DXGI Desktop Duplication fails with `0x80070005` (`E_ACCESSDENIED`) or exit code `2` inside a restricted LOW-integrity terminal sandbox, re-run the command in an interactive MEDIUM-integrity desktop session outside the sandbox.
+Stop any stale `bloatfclips.exe` instance before running `clipper_bench.exe --gpu-load-bench`. If live DXGI Desktop Duplication fails with `0x80070005` (`E_ACCESSDENIED`) or exit code `2` inside a restricted LOW-integrity terminal sandbox, re-run the command in an interactive MEDIUM-integrity desktop session outside the sandbox.
 
 ## Drive
 
@@ -46,15 +46,15 @@ c:\Users\yugi\Desktop\recorder\build\clipper_bench.exe --self-test-clip 3 --out 
 c:\Users\yugi\Desktop\recorder\build\clipper_bench.exe --self-test-clip 2 --fps=120 --out c:\Users\yugi\Desktop\recorder\build\test_out\live_replay_120fps.mp4
 ```
 
-Run the 5-round alternating 3D swapchain GPU load benchmark (launches `clipper.exe --tray --fail-fast` headlessly). Close heavy background GPU apps first if checking sub-millisecond baseline jitter.
+Run the 5-round alternating 3D swapchain GPU load benchmark (launches `bloatfclips.exe --tray --fail-fast` headlessly). Close heavy background GPU apps first if checking sub-millisecond baseline jitter.
 
 ```powershell
 c:\Users\yugi\Desktop\recorder\build\clipper_bench.exe --gpu-load-bench 3 --runs 5
 ```
 
-If testing tray startup directly, pass `--tray --fail-fast --ready-event=<UniqueName>` to `build\clipper.exe` and terminate only the matching child process PID via `WM_CLOSE`.
+If testing tray startup directly, pass `--tray --fail-fast --ready-event=<UniqueName>` to `build\bloatfclips.exe` and terminate only the matching child process PID via `WM_CLOSE`.
 
-When verifying UI changes, launch `build\clipper.exe` without `--tray` and verify `ClipperSettingsWindow` opens (`IsWindowVisible`, `1000x640`, `children=0`), destroys itself cleanly on `WM_CLOSE` while leaving `ClipperTrayHiddenWindow` running, re-opens on a second `clipper.exe` invocation, and exits cleanly when `WM_CLOSE` is sent to `ClipperTrayHiddenWindow`.
+When verifying UI changes, launch `build\bloatfclips.exe` without `--tray` and verify `ClipperSettingsWindow` opens (`IsWindowVisible`, `1000x640`, `children=0`), destroys itself cleanly on `WM_CLOSE` while leaving `ClipperTrayHiddenWindow` running, re-opens on a second `bloatfclips.exe` invocation, and exits cleanly when `WM_CLOSE` is sent to `ClipperTrayHiddenWindow`.
 
 ## Evidence
 

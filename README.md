@@ -8,7 +8,7 @@ bloatfclips records your screen into memory in the background. When something wo
 
 - [Features](#features)
 - [Requirements](#requirements)
-- [Quick start](#quick-start)
+- [Install](#install)
 - [Using bloatfclips](#using-bloatfclips)
 - [Configuration](#configuration)
 - [Performance](#performance)
@@ -33,27 +33,24 @@ bloatfclips records your screen into memory in the background. When something wo
 | --- | --- |
 | OS | Windows 10 or 11, 64-bit |
 | GPU | NVIDIA GPU with NVENC, driver **610 or newer** |
-| Build tools | Visual Studio Build Tools 2022 (MSVC), Windows SDK 10.0.26100 or compatible, CMake 3.20+, Ninja |
+
+Nothing else needs to be installed: no .NET, no Visual C++ Redistributable.
 
 bloatfclips records a whole monitor with DXGI Desktop Duplication, not a single window. Whatever is on that screen ends up in the clip.
 
-## Quick start
+## Install
 
-There are no prebuilt releases yet, so build from source. Run this from a **Developer Command Prompt**, or call `vcvars64.bat` first:
-
-```cmd
-"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-```
-
-Then start it:
-
-```powershell
-.\build\clipper.exe
-```
+1. Get `bloatfclips-setup-<version>.exe`. Download it from the repo's Releases page, or build it yourself (see [Building the installer](#building-the-installer)).
+2. Run it. It installs just for your Windows account, so it doesn't ask for admin rights.
+3. Choose whether bloatfclips should **start automatically when you sign in** (on by default) and whether you want a desktop shortcut.
 
 bloatfclips starts recording right away. Its icon appears in the system tray and the window opens. Play something, press **Ctrl+Alt+S**, and the clip appears in `%USERPROFILE%\Videos\Clips` and on the **Clips** page.
+
+> **"Windows protected your PC"?** The installer isn't code-signed yet, so SmartScreen warns about it. Click **More info**, then **Run anyway**.
+
+**Updating:** run a newer setup over the existing install. Your settings are kept.
+
+**Uninstalling:** go to **Settings → Apps → Installed apps → bloatfclips → Uninstall**. Uninstalling closes bloatfclips if it is running and removes the app, its settings, and the autostart entry. Your saved clips stay in your Videos folder.
 
 ## Using bloatfclips
 
@@ -63,7 +60,7 @@ The **Settings** page (screenshot above) changes the monitor, frame rate, replay
 
 The **Clips** page lists up to 48 recent clips from the clips folder. Click a thumbnail to play it.
 
-Closing the window hides bloatfclips to the tray and keeps recording. Launching `clipper.exe` again reopens the existing window instead of starting a second copy.
+Closing the window hides bloatfclips to the tray and keeps recording. Launching `bloatfclips.exe` again reopens the existing window instead of starting a second copy.
 
 ### Tray icon
 
@@ -88,11 +85,11 @@ Closing the window hides bloatfclips to the tray and keeps recording. Launching 
 | `--fail-fast` | Exit with code `2` if capture cannot start |
 | `--ready-event=NAME` | Signal a named Win32 event once capture is running (for scripts and benchmarks) |
 
-> **Tip:** To start bloatfclips with Windows, put a shortcut to `clipper.exe --tray` in `shell:startup`.
+The installer's autostart option runs `bloatfclips.exe --tray` at sign-in.
 
 ## Configuration
 
-Settings are stored in `clipper.ini` next to `clipper.exe`. The file is created on first launch and rewritten when you click **Apply changes** in the window.
+Settings are stored in `clipper.ini` next to `bloatfclips.exe`. With the installer, that's `%LOCALAPPDATA%\Programs\bloatfclips\clipper.ini`. The file is created on first launch and rewritten when you click **Apply changes** in the window.
 
 | Key | Default | Allowed values | Notes |
 | --- | --- | --- | --- |
@@ -149,6 +146,32 @@ For data shapes, the state machine, and threading, see [`docs/designs/clipper_ar
 
 ## Development
 
+### Building from source
+
+You need Visual Studio Build Tools 2022 (MSVC), the Windows SDK 10.0.26100 or compatible, CMake 3.20+, and Ninja. Run this from a **Developer Command Prompt**, or call `vcvars64.bat` first:
+
+```cmd
+"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+.\build\bloatfclips.exe
+```
+
+The runtime is linked statically (`/MT`), so `bloatfclips.exe` runs on a clean Windows install without the Visual C++ Redistributable.
+
+### Building the installer
+
+The installer is made with [Inno Setup 6](https://jrsoftware.org/isinfo.php). Install it once, then build:
+
+```powershell
+winget install JRSoftware.InnoSetup
+powershell -ExecutionPolicy Bypass -File tools\build_installer.ps1
+```
+
+The script builds a Release exe in `build-release\` and writes `dist\bloatfclips-setup-<version>.exe`. The installer itself is defined in [`installer/bloatfclips.iss`](installer/bloatfclips.iss).
+
+The version number comes from [`src/app.rc`](src/app.rc), so bump `BFC_VERSION_NUM` and `BFC_VERSION_STR` there before a release. The app icon is generated by [`tools/make_icon.ps1`](tools/make_icon.ps1) into `assets/bloatfclips.ico`.
+
 ### Project layout
 
 ```
@@ -164,12 +187,15 @@ src/
   config.*              clipper.ini + CLI parsing and validation
 tests/unit_tests.cpp    unit and end-to-end tests
 tools/clipper_bench.cpp live self-test and GPU load benchmark
+tools/build_installer.ps1  Release build + installer
+installer/bloatfclips.iss  Inno Setup installer definition
+assets/bloatfclips.ico  app icon (generated by tools/make_icon.ps1)
 third_party/nvcodec/    NVENC API header (Video Codec SDK 13.1)
 ```
 
 ### Tests and benchmarks
 
-The build produces three executables: `clipper.exe`, `clipper_tests.exe`, and `clipper_bench.exe`.
+The build produces three executables: `bloatfclips.exe`, `clipper_tests.exe`, and `clipper_bench.exe`.
 
 ```powershell
 # Unit + encode/decode round-trip tests (should end with "Total failures: 0")
@@ -192,6 +218,7 @@ Close other running copies of bloatfclips, games, and GPU-heavy apps before benc
 | bloatfclips exits immediately or capture never starts | Check that you have an NVIDIA GPU with driver 610 or newer. Run with `--fail-fast` to get exit code `2` on failure. |
 | Hotkey does nothing | Another app may already own the combination. Pick a different one under **Settings → Save hotkey**. |
 | Saved clip is shorter than the replay length | The buffer only holds what was recorded since bloatfclips started. Applying new capture settings (monitor, frame rate, bitrate, length, audio) restarts recording and empties it. |
+| No sound in clips, or bloatfclips won't start on Windows "N" editions | Install the **Media Feature Pack** from Settings → Apps → Optional features. bloatfclips uses Media Foundation for audio encoding. |
 | Wrong monitor recorded | Pick it under **Settings → Display source**, or set `monitor_index`. Click **Refresh displays** after plugging in a monitor. |
 
 ## License

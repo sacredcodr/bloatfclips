@@ -36,6 +36,7 @@ struct AppState {
     std::string lastStartError;
     HWND hwnd = nullptr;
     HICON trayIcon = nullptr;
+    HICON appIcon = nullptr;
     bool ownsTrayIcon = false;
     UINT taskbarCreatedMsg = 0;
     UINT showSettingsMsg = 0;
@@ -231,7 +232,7 @@ bool ApplyNewConfig(AppState& app, clipper::AppConfig nextCfg, std::wstring& fee
 
 void OpenSettings(AppState& app) {
     if (!app.settingsWin) return;
-    app.settingsWin->ShowOrFocus(app.hInst, app.trayIcon);
+    app.settingsWin->ShowOrFocus(app.hInst, app.appIcon);
 }
 
 void ShowContextMenu(AppState& app) {
@@ -424,6 +425,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     app.trayIcon = CreateRecorderTrayIcon();
     app.ownsTrayIcon = (app.trayIcon != nullptr);
     if (!app.trayIcon) app.trayIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    app.appIcon = LoadIconW(hInst, MAKEINTRESOURCEW(1));
+    if (!app.appIcon) app.appIcon = app.trayIcon;
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -503,7 +506,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
 
     if (exitCode == 0) {
         if (!startInTray && !failFast) {
-            if (app.settingsWin) app.settingsWin->ShowOrFocus(app.hInst, app.trayIcon, initialTab);
+            if (app.settingsWin) app.settingsWin->ShowOrFocus(app.hInst, app.appIcon, initialTab);
             if (!started && app.settingsWin) {
                 app.settingsWin->ShowFeedback(L"Capture failed: " + clipper::Utf8ToWide(startErr), true);
             } else if (!hkOk && app.settingsWin) {

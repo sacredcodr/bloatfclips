@@ -3,7 +3,9 @@ if(POLICY CMP0141)
   cmake_policy(SET CMP0141 NEW)
 endif()
 set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "Embedded")
-project(clipper LANGUAGES CXX)
+# Static CRT so the shipped exe runs without the Visual C++ Redistributable.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+project(clipper LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -59,7 +61,9 @@ target_link_libraries(clipper_core
 add_executable(clipper WIN32
   src/main.cpp
   src/settings_window.cpp
+  src/app.rc
 )
+set_target_properties(clipper PROPERTIES OUTPUT_NAME bloatfclips)
 
 target_link_libraries(clipper
   PRIVATE

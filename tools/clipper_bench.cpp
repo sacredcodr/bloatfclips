@@ -477,14 +477,14 @@ HWND FindWindowForPid(DWORD targetPid, const wchar_t* className) {
 int RunGpuLoadBench(int secondsPerRun, int runsPerSide) {
     wchar_t exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    std::filesystem::path clipperExe = std::filesystem::path(exePath).parent_path() / L"clipper.exe";
+    std::filesystem::path clipperExe = std::filesystem::path(exePath).parent_path() / L"bloatfclips.exe";
     if (!std::filesystem::exists(clipperExe)) {
-        std::printf("Bench FAIL: clipper.exe not found next to clipper_bench.exe (%ls)\n", clipperExe.c_str());
+        std::printf("Bench FAIL: bloatfclips.exe not found next to clipper_bench.exe (%ls)\n", clipperExe.c_str());
         return 1;
     }
 
     if (HWND existing = FindWindowW(L"ClipperTrayHiddenWindow", clipper::kAppName)) {
-        std::printf("Bench FAIL: clipper.exe is already running; close it first\n");
+        std::printf("Bench FAIL: bloatfclips.exe is already running; close it first\n");
         return 1;
     }
 
@@ -530,7 +530,7 @@ int RunGpuLoadBench(int secondsPerRun, int runsPerSide) {
                 STARTUPINFOW startup{};
                 startup.cb = sizeof(startup);
                 if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &pi)) {
-                    std::printf("Bench FAIL: CreateProcessW clipper.exe err=%lu\n", GetLastError());
+                    std::printf("Bench FAIL: CreateProcessW bloatfclips.exe err=%lu\n", GetLastError());
                     if (hReady) CloseHandle(hReady);
                     return 1;
                 }
@@ -541,7 +541,7 @@ int RunGpuLoadBench(int secondsPerRun, int runsPerSide) {
                 if (!hadReady || wr != WAIT_OBJECT_0) {
                     DWORD exitCode = 0;
                     GetExitCodeProcess(pi.hProcess, &exitCode);
-                    std::printf("Bench FAIL: clipper.exe failed readiness wait (wr=%lu code=%lu)\n", wr, exitCode);
+                    std::printf("Bench FAIL: bloatfclips.exe failed readiness wait (wr=%lu code=%lu)\n", wr, exitCode);
                     TerminateProcess(pi.hProcess, 1);
                     CloseHandle(pi.hThread);
                     CloseHandle(pi.hProcess);
@@ -578,7 +578,7 @@ int RunGpuLoadBench(int secondsPerRun, int runsPerSide) {
                 if (cw) PostMessageW(cw, WM_CLOSE, 0, 0);
                 DWORD stopWr = WaitForSingleObject(pi.hProcess, 4000);
                 if (stopWr != WAIT_OBJECT_0) {
-                    std::printf("\nBench FAIL: child clipper.exe pid=%lu did not exit cleanly\n", pi.dwProcessId);
+                    std::printf("\nBench FAIL: child bloatfclips.exe pid=%lu did not exit cleanly\n", pi.dwProcessId);
                     TerminateProcess(pi.hProcess, 1);
                     CloseHandle(pi.hThread);
                     CloseHandle(pi.hProcess);
@@ -628,7 +628,7 @@ int RunGpuLoadBench(int secondsPerRun, int runsPerSide) {
     std::printf("ON : 3D p50=%.3f ms (range %.3f..%.3f) | p95=%.3f ms | FPS=%.1f\n",
         onP50, onMin, onMax, onP95, onFps);
     std::printf("Delta p50: %+.3f ms (%+.2f%%)\n", onP50 - offP50, ((onP50 - offP50) / offP50) * 100.0);
-    std::printf("clipper.exe footprint: median CPU=%.3f%% | median RAM=%.1f MB | max active disk write=%llu B\n",
+    std::printf("bloatfclips.exe footprint: median CPU=%.3f%% | median RAM=%.1f MB | max active disk write=%llu B\n",
         Median(onRes.clipperCpuPct), Median(onRes.clipperRamMb), static_cast<unsigned long long>(maxDisk));
     return 0;
 }
