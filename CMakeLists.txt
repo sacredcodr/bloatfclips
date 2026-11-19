@@ -13,6 +13,9 @@ add_library(clipper_core STATIC
   src/config.cpp
   src/ring_buffer.cpp
   src/mp4_muxer.cpp
+  src/video_pipeline.cpp
+  src/audio_engine.cpp
+  src/recorder_engine.cpp
 )
 
 target_include_directories(clipper_core
@@ -40,7 +43,27 @@ target_compile_options(clipper_core
 
 target_link_libraries(clipper_core
   PUBLIC
+    d3d11
+    dxgi
+    dxguid
+    ole32
+    mfplat
+    mfuuid
+    wmcodecdspuuid
+    avrt
+    winmm
     user32
+)
+
+add_executable(clipper WIN32
+  src/main.cpp
+)
+
+target_link_libraries(clipper
+  PRIVATE
+    clipper_core
+    shell32
+    gdi32
 )
 
 add_executable(clipper_tests
@@ -50,12 +73,17 @@ add_executable(clipper_tests
 target_link_libraries(clipper_tests
   PRIVATE
     clipper_core
-    d3d11
-    dxgi
-    dxguid
-    ole32
-    mfplat
     mfreadwrite
-    mfuuid
-    wmcodecdspuuid
+)
+
+add_executable(clipper_bench
+  tools/clipper_bench.cpp
+)
+
+target_link_libraries(clipper_bench
+  PRIVATE
+    clipper_core
+    mfreadwrite
+    psapi
+    d3dcompiler
 )
